@@ -123,10 +123,19 @@ if ($distros -notcontains $Distro) {
     # authenticated by this already-elevated Windows session rather than a
     # Linux password, so it can't hit the same failure mode.
     wsl -d $Distro -u root --cd ~ -- bash -c "useradd -m -s /bin/bash '$newUsername' && usermod -aG sudo '$newUsername'"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to create Linux user '$newUsername' (see output above) - possibly an invalid username or a leftover account from a previous failed attempt. Fix the issue (e.g. pick a different username) and re-run."
+        exit 1
+    }
     # Piped via stdin (not embedded in the command line) so the password
     # never shows up in a process listing or gets echoed into this script's
     # own transcript log.
     "${newUsername}:${newPasswordPlain}" | wsl -d $Distro -u root --cd ~ -- chpasswd
+    if ($LASTEXITCODE -ne 0) {
+        $newPasswordPlain = $null
+        Write-Error "Failed to set the password for '$newUsername' (see output above). The account exists but has no usable password - fix manually (wsl -d $Distro -u root -- passwd $newUsername) or re-run this script."
+        exit 1
+    }
     $newPasswordPlain = $null
     # Explicitly includes [boot] systemd=true, not just [user] - this file
     # is being created fresh here (truncating `>`), and a fresh Ubuntu WSL
@@ -136,6 +145,10 @@ if ($distros -notcontains $Distro) {
     # entirely on a freshly-bootstrapped machine ("System has not been
     # booted with systemd as init system").
     wsl -d $Distro -u root --cd ~ -- bash -c "printf '[boot]\nsystemd=true\n\n[user]\ndefault=$newUsername\n' > /etc/wsl.conf"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to write /etc/wsl.conf (see output above) - the distro exists but won't default to the right user/systemd config. Fix manually and re-run."
+        exit 1
+    }
     wsl --terminate $Distro
     Write-Host "Distro '$Distro' is set up with default user '$newUsername'."
 }
@@ -167,6 +180,17 @@ if (-not $systemdEnabled) {
     $wslConfWsl = "/mnt/" + $wslConfWin.Substring(0, 1).ToLower() + "/" + $wslConfWin.Substring(3).Replace('\', '/')
     wsl -d $Distro -u root --cd ~ -- cp $wslConfWsl /etc/wsl.conf
     Remove-Item $wslConfWin -ErrorAction SilentlyContinue
+    # `wsl --terminate` is an abrupt VM shutdown, not a graceful `systemctl
+    # stop` - if docker/containerd happen to already be running here (a
+    # machine that hasn't yet had install.sh's auto-start-disable fix
+    # applied will have them auto-started at this distro's last boot),
+    # terminating while they're mid-write is exactly the kind of event that
+    # corrupts overlay2/containerd storage. Stop them cleanly first if
+    # they're up; harmless no-op if they aren't.
+    $prevEAP2 = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    wsl -d $Distro -u root --cd ~ -- systemctl stop docker.socket docker.service containerd.service 2>$null
+    $ErrorActionPreference = $prevEAP2
     wsl --terminate $Distro
     Write-Host "systemd enabled for '$Distro'."
 }

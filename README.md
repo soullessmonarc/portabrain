@@ -1,5 +1,7 @@
 # PortaBrain
 
+![PortaBrain logo](logo.png)
+
 *A portable brain you can plug into any machine.*
 
 A self-contained Ollama + ComfyUI + Open WebUI stack that lives entirely on

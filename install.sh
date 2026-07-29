@@ -522,6 +522,15 @@ done
 echo "$TIER" > "$STACK_DIR/.gpu_tier"
 
 echo ""
+read -r -p "What would you like to name your AI assistant? [Assistant]: " AGENT_NAME
+AGENT_NAME="${AGENT_NAME:-Assistant}"
+
+echo "== Registering models in Open WebUI as '$AGENT_NAME' (system prompt + image-generation support) =="
+docker cp "$SCRIPT_DIR/setup_register_models.py" openwebui:/app/backend/setup_register_models.py
+docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MODEL" -e CODER_MODEL="$CODER_MODEL" \
+  openwebui python3 setup_register_models.py
+
+echo ""
 echo "Done. Open WebUI: http://localhost:8080"
 echo "GPU tier: $TIER (chat: $CHAT_MODEL, coder: $CODER_MODEL)"
 echo ""
@@ -529,6 +538,7 @@ echo "Next steps:"
 echo "  - Create your admin account at http://localhost:8080 on first visit."
 echo "  - Image generation (ComfyUI): download SDXL checkpoint(s) of your choice"
 echo "    into $MOUNT_POINT/models/image, then configure Admin Settings -> Images."
-echo "  - Customize the model system prompt: see setup_register_models.py.template"
-echo "    in this folder for a starting point."
+echo "  - Customize the model system prompt further: edit setup_register_models.py"
+echo "    in this folder and re-run it (see the comment at the bottom of that file"
+echo "    for the environment variables it expects), or the docker exec command above."
 docker compose ps

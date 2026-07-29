@@ -8,12 +8,15 @@ to install.sh (in this same folder) to do everything else - including
 asking you which drive/mount-point/network-share options you want, so
 nothing here is tied to any specific disk or machine.
 
-Prerequisites this script does NOT install for you:
-  - WSL2 itself (run `wsl --install` once per machine if missing)
-  - An Ubuntu distro under WSL2 (`wsl --install -d Ubuntu` - this is an
-    interactive first-run that creates a Linux user, so it's left to you)
+This script offers to install WSL itself (via `wsl --install`) and the
+Ubuntu distro (with a non-interactive user setup) if either is missing, so
+a fresh machine is normally just a couple of prompts away from working -
+though enabling WSL for the first time can still require one reboot, which
+this script detects and tells you about rather than silently continuing.
+The one thing it still can't do for you:
   - The NVIDIA GPU driver on the Windows host, if this machine has an
-    NVIDIA GPU (WSL2 GPU passthrough uses the host driver directly)
+    NVIDIA GPU (WSL2 GPU passthrough uses the host driver directly) -
+    install that manually first.
 
 Usage:
   .\install-windows.ps1
@@ -30,11 +33,142 @@ Write-Host ""
 Write-Host "===== Portable AI Rig Setup (Windows) ====="
 Write-Host ""
 
+Write-Host "== Checking WSL is installed =="
+$wslCmd = Get-Command wsl.exe -ErrorAction SilentlyContinue
+$wslInstalled = $false
+if ($wslCmd) {
+    # A failing native command whose stderr is redirected (even to $null)
+    # gets wrapped as a terminating NativeCommandError under
+    # $ErrorActionPreference = "Stop" in PowerShell 5.1, even though the
+    # exit code is meant to be handled gracefully via $LASTEXITCODE below -
+    # confirmed live on the non-template copy of this repo: this exact
+    # pattern aborted the whole script instead of falling through to the
+    # "not installed" branch as intended. Guard it.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    wsl --status *> $null
+    $wslInstalled = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEAP
+}
+if (-not $wslInstalled) {
+    Write-Host "WSL is not installed on this machine."
+    $installWsl = Read-Host "Install it now? [y/N]"
+    if ($installWsl -notmatch '^[Yy]') {
+        Write-Error "WSL is required to run this on Windows. Install it manually ('wsl --install') and re-run this script."
+        exit 1
+    }
+
+    Write-Host "== Installing WSL =="
+    # `wsl --install` (not `winget install Microsoft.WSL`) - on a machine
+    # where the underlying Windows optional features
+    # (VirtualMachinePlatform, WSL itself) were never enabled, only this
+    # form actually enables them via DISM; the winget package alone can
+    # leave a bare machine still non-functional. Confirmed live on the
+    # non-template copy of this repo: this exact scenario happened on a
+    # real machine and needed a reboot afterward.
+    wsl --install
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "wsl --install failed. Install it manually and re-run this script."
+        exit 1
+    }
+
+    # DISM-based feature enablement can report success while still leaving
+    # WSL non-functional until a reboot - verify directly rather than
+    # trusting the exit code alone.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    wsl --status *> $null
+    $wslNowWorks = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEAP
+
+    if (-not $wslNowWorks) {
+        Write-Error "WSL was installed but isn't functional yet - this machine needs a reboot before it will work (the underlying Windows features were just enabled). Reboot, then re-run this script."
+        exit 1
+    }
+}
+
 Write-Host "== Checking WSL distro '$Distro' =="
 $distros = wsl -l -q
 if ($distros -notcontains $Distro) {
-    Write-Error "WSL distro '$Distro' not found. Install it first: wsl --install -d $Distro (one-time, interactive)."
-    exit 1
+    Write-Host "WSL distro '$Distro' not found."
+    $autoInstall = Read-Host "Install and set it up now? This registers the distro and creates a new Linux user account inside it. [y/N]"
+    if ($autoInstall -notmatch '^[Yy]') {
+        Write-Error "WSL distro '$Distro' not found. Install it first: wsl --install -d $Distro (one-time, interactive)."
+        exit 1
+    }
+
+    Write-Host "== Installing WSL distro '$Distro' =="
+    # --no-launch skips the automatic first launch, which is what normally
+    # triggers Ubuntu's interactive username/password wizard - we do that
+    # step ourselves below instead, non-interactively, via the always-
+    # available root account.
+    wsl --install -d $Distro --no-launch
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "wsl --install -d $Distro failed. If WSL2 itself isn't installed/updated yet, run 'wsl --install' and 'wsl --update' first (this can require a reboot the first time), then re-run this script."
+        exit 1
+    }
+
+    $newUsername = Read-Host "Choose a username for the new Linux user"
+    $newPasswordSecure = Read-Host "Choose a password for it" -AsSecureString
+    $newPasswordPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPasswordSecure))
+
+    Write-Host "== Creating user '$newUsername' inside $Distro =="
+    # Added to the sudo group for the human's own manual/interactive use
+    # later - this script's own automated steps deliberately do NOT rely
+    # on sudo at all (see below): a nested `wsl -d ... -- sudo ...` call
+    # from a PowerShell script proved unreliable in practice on the non-
+    # template copy of this repo, failing authentication consistently even
+    # after granting passwordless sudo explicitly. Every automated
+    # privileged step instead uses `wsl -u root` directly, which is
+    # authenticated by this already-elevated Windows session rather than a
+    # Linux password, so it can't hit the same failure mode.
+    wsl -d $Distro -u root --cd ~ -- bash -c "useradd -m -s /bin/bash '$newUsername' && usermod -aG sudo '$newUsername'"
+    # Piped via stdin (not embedded in the command line) so the password
+    # never shows up in a process listing or gets echoed into this script's
+    # own transcript log.
+    "${newUsername}:${newPasswordPlain}" | wsl -d $Distro -u root --cd ~ -- chpasswd
+    $newPasswordPlain = $null
+    # Explicitly includes [boot] systemd=true, not just [user] - this file
+    # is being created fresh here (truncating `>`), and a fresh Ubuntu WSL
+    # image's own default already has systemd enabled, so overwriting with
+    # *only* the [user] section would silently disable it. Confirmed live
+    # on the non-template copy of this repo: this exact bug broke Docker
+    # entirely on a freshly-bootstrapped machine ("System has not been
+    # booted with systemd as init system").
+    wsl -d $Distro -u root --cd ~ -- bash -c "printf '[boot]\nsystemd=true\n\n[user]\ndefault=$newUsername\n' > /etc/wsl.conf"
+    wsl --terminate $Distro
+    Write-Host "Distro '$Distro' is set up with default user '$newUsername'."
+}
+
+Write-Host "== Checking systemd is enabled for '$Distro' =="
+# Self-healing, runs every time regardless of whether the distro was just
+# bootstrapped above or already existed - covers a distro whose
+# /etc/wsl.conf was already left systemd-less by an earlier run of this
+# script (see the fix note above) before this check existed. Everything
+# from Docker onward depends on systemd actually being PID 1, so this has
+# to be caught and fixed *before* install.sh runs, not after it fails
+# partway through.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+wsl -d $Distro -u root --cd ~ -- grep -q '^systemd=true' /etc/wsl.conf 2>$null
+$systemdEnabled = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEAP
+
+if (-not $systemdEnabled) {
+    Write-Host "systemd isn't enabled for '$Distro' yet - fixing /etc/wsl.conf and restarting WSL2 to apply it (stops anything currently running inside it)..."
+    $currentUser = (wsl -d $Distro --cd ~ -- whoami 2>$null).Trim()
+    $wslConfWin = Join-Path $env:TEMP "portableai-wslconf-helper.conf"
+    $wslConfLines = @("[boot]", "systemd=true", "")
+    if ($currentUser -and $currentUser -ne "root") {
+        $wslConfLines += @("[user]", "default=$currentUser", "")
+    }
+    $wslConfContent = ($wslConfLines -join "`n")
+    [System.IO.File]::WriteAllText($wslConfWin, $wslConfContent, (New-Object System.Text.UTF8Encoding $false))
+    $wslConfWsl = "/mnt/" + $wslConfWin.Substring(0, 1).ToLower() + "/" + $wslConfWin.Substring(3).Replace('\', '/')
+    wsl -d $Distro -u root --cd ~ -- cp $wslConfWsl /etc/wsl.conf
+    Remove-Item $wslConfWin -ErrorAction SilentlyContinue
+    wsl --terminate $Distro
+    Write-Host "systemd enabled for '$Distro'."
 }
 
 Write-Host "== Checking WSL2 networking mode =="
@@ -89,7 +223,15 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "== Handing off to install.sh inside WSL2 ($Distro) =="
 $linuxScriptPath = "/mnt/" + $ScriptDir.Substring(0, 1).ToLower() + "/" + $ScriptDir.Substring(3).Replace('\', '/')
-wsl -d $Distro -- bash -c "sleep 2; sudo bash '$linuxScriptPath/install.sh'"
+# `-u root` (not `sudo`) - see the note above the user-creation step for
+# why: a nested `wsl -d ... -- sudo ...` call proved unreliable in
+# practice on the non-template copy of this repo, while `-u root` is
+# authenticated by this already-elevated Windows session and can't hit
+# that failure mode. `--cd ~` avoids WSL trying and failing to translate
+# this script's own working directory (e.g. a UNC network-share path,
+# which WSL can't map to a Linux path at all) into the new session's
+# starting directory.
+wsl -d $Distro -u root --cd ~ -- bash -c "sleep 2; bash '$linuxScriptPath/install.sh'"
 
 Write-Host ""
 $installWatcher = Read-Host "Install a lightweight scheduled task that pops a toast if the network share (if you set one up) goes down or reconnects mid-session? [Y/n]"

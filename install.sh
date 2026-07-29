@@ -277,6 +277,25 @@ else
   echo "Docker already installed: $(docker --version)"
 fi
 
+# Installing docker-ce via apt auto-enables docker.socket/docker.service/
+# containerd.service to start at boot (Debian/Ubuntu package postinst
+# default) - but WSL2 boots and systemd starts *before* the disk-attach +
+# mount steps above ever run, since those come from this script, invoked
+# separately from Windows. That means docker/containerd start (and
+# containerd creates its own "shared propagation" self-bind-mount at their
+# configured data-root path) while the drive's own /docker subdirectory is
+# still just a plain directory on WSL's own internal disk - the real
+# drive hasn't been mounted over it yet. The result: docker's data-root
+# silently ends up living on WSL2's internal storage instead of the
+# drive, invisibly, every boot. Confirmed live on the non-template copy
+# of this repo: this caused `docker ps -a` to come back completely empty
+# after a WSL2 restart, and eventually corrupted docker's own image/
+# container storage. Disabling auto-start (idempotent, self-heals a
+# machine already affected) means docker/containerd only ever start via
+# the explicit `systemctl start` calls below, after the drive is mounted.
+echo "== Disabling docker/containerd auto-start at boot (they start explicitly, below, after the drive is mounted) =="
+systemctl disable docker.socket docker.service containerd.service 2>/dev/null || true
+
 echo "== Checking NVIDIA Container Toolkit =="
 HAS_GPU=false
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then

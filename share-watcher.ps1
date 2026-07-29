@@ -66,7 +66,7 @@ if (Test-Path $StateFile) {
 
 $isDown = $false
 try {
-    wsl -d $Distro -- test -f /var/lib/portableai/share-alerted
+    wsl -d $Distro --cd ~ -- test -f /var/lib/portableai/share-alerted
     $isDown = ($LASTEXITCODE -eq 0)
 } catch {
     # WSL not reachable (distro stopped, disk not attached, etc.) - nothing

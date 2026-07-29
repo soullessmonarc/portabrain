@@ -205,7 +205,8 @@ Write-Host "== Checking WSL2 networking mode =="
 # just ignore the unrecognized config key rather than failing.
 $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
 $wslConfigText = if (Test-Path $wslConfigPath) { Get-Content $wslConfigPath -Raw } else { "" }
-if ($wslConfigText -notmatch '(?im)^\s*networkingMode\s*=\s*mirrored\s*$') {
+$mirroredEnabled = $wslConfigText -match '(?im)^\s*networkingMode\s*=\s*mirrored\s*$'
+if (-not $mirroredEnabled) {
     Write-Host "WSL2's default networking can block LAN/network-share access while a VPN is active on this machine (a known WSL2 limitation)."
     Write-Warning "Enabling 'mirrored' mode changes a machine-wide WSL2 setting (affects every WSL distro, not just this rig) and needs Windows 11 22H2+ or a recent Windows 10 WSL update. Skip if unsure - you can remove the line from $wslConfigPath later either way."
     $enableMirrored = Read-Host "Enable WSL2 mirrored networking mode now? [y/N]"
@@ -219,6 +220,26 @@ if ($wslConfigText -notmatch '(?im)^\s*networkingMode\s*=\s*mirrored\s*$') {
         Write-Host "Set networkingMode=mirrored in $wslConfigPath - restarting WSL2 for it to take effect..."
         wsl --shutdown
         Start-Sleep -Seconds 3
+        $mirroredEnabled = $true
+    }
+}
+
+# Mirrored mode's tradeoff, confirmed live: NAT mode's "localhost
+# forwarding" is a special loopback proxy that bypasses Windows Firewall
+# entirely, but mirrored mode exposes WSL2's ports on this host's real
+# interfaces instead - if those interfaces are on the (default,
+# restrictive) Public firewall profile, Windows Firewall then blocks what
+# would otherwise be ordinary localhost:8080 access to Open WebUI. This is
+# a self-heal (checked every run, not just when mirrored mode is *just*
+# enabled above) since a machine can already have mirrored mode on from
+# before this check existed, exactly as happened live on the non-template
+# copy of this repo.
+if ($mirroredEnabled -and -not (Get-NetFirewallRule -DisplayName "WSL2 Mirrored - Open WebUI (loopback only)" -ErrorAction SilentlyContinue)) {
+    $addFirewallRule = Read-Host "WSL2 mirrored networking is on, which can block 'localhost:8080' (Open WebUI) under Windows Firewall's Public profile. Add a firewall rule scoped to this machine only (not the wider network) to fix it? [Y/n]"
+    if ($addFirewallRule -notmatch '^[Nn]') {
+        $selfIps = @("127.0.0.1") + (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" } | Select-Object -ExpandProperty IPAddress -Unique)
+        New-NetFirewallRule -DisplayName "WSL2 Mirrored - Open WebUI (loopback only)" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -RemoteAddress $selfIps -Profile Any | Out-Null
+        Write-Host "Firewall rule added (allows port 8080 only from this machine's own IPs, not the wider network)."
     }
 }
 

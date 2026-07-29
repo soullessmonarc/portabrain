@@ -1,0 +1,9 @@
+# Enforce LF endings for scripts. A CRLF creeping into a .sh file via a
+# Windows checkout breaks `bash -n` / execution on the Linux and macOS
+# targets this repo installs onto - LF must stay authoritative regardless
+# of which OS clones the repo.
+* text=auto eol=lf
+
+# Binary assets - never text-normalize, always diff as binary.
+*.png binary
+*.jpg binary

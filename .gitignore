@@ -1,0 +1,11 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor/IDE local state
+.vscode/
+.idea/
+
+# This repo only ships the installer scripts themselves - the stack files
+# they generate (docker-compose.yml, credentials files, systemd units) are
+# written onto the target machine's own drive at install time, never here.

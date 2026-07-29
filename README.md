@@ -1,91 +1,76 @@
+<div align="center" markdown="1">
+
+<img src="docs/logo.png" width="220" style="width:220px;height:auto;" alt="PortaBrain logo: a stylised brain rendered as glowing blue-to-violet circuit traces, its lower half merging into a USB drive plug, on a dark navy background">
+
 # PortaBrain
 
-![PortaBrain logo](logo.png)
+**A portable brain you can plug into any machine.**
 
-*A portable brain you can plug into any machine.*
+![Status: beta](https://img.shields.io/badge/status-beta-yellow)
+![Bash 5](https://img.shields.io/badge/bash-5-4EAA25?logo=gnubash&logoColor=white)
+![PowerShell 5.1+](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-required-2496ED?logo=docker&logoColor=white)
+![Ollama](https://img.shields.io/badge/ollama-supported-000000?logo=ollama&logoColor=white)
+![License: private](https://img.shields.io/badge/license-private-lightgrey)
 
-A self-contained Ollama + ComfyUI + Open WebUI stack that lives entirely on
-one external drive, so you can build it once and move it between machines.
-Nothing in here is tied to a specific device, drive, or network - every
-choice is asked interactively or auto-detected from the hardware in front
-of it.
+</div>
+
+There's no CI badge because there's no CI in this repo yet, and no license badge beyond
+"private" because no public licence has been granted - see
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for what that actually
+means in practice.
+
+> [!IMPORTANT]
+> This has been verified through live, interactive runs against real hardware, not an
+> automated test suite - there is no CI in this repo. "Beta" here means the Linux/WSL2
+> and Windows paths are complete and exercised; macOS Apple Silicon support is
+> real but partial (no ComfyUI yet). See
+> [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the full,
+> itemised breakdown of what's verified versus what isn't.
+
+A self-contained Ollama + ComfyUI + Open WebUI stack that lives entirely on one
+external drive, so you can build it once and move it between machines. Nothing in here
+is tied to a specific device, drive, or network - every choice is asked interactively
+or auto-detected from the hardware in front of it.
+
+- **New here?** → [`docs/EXECUTIVE_SUMMARY.md`](docs/EXECUTIVE_SUMMARY.md)
+- **Setting it up?** → [`docs/MASTER_SETUP.md`](docs/MASTER_SETUP.md)
+- **How close to production?** → [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
+- **Want the detailed engineering record?** → [`docs/STATUS.md`](docs/STATUS.md)
+- **How does the network-share reliability work?** → [`docs/NETWORK_SHARE_RELIABILITY.md`](docs/NETWORK_SHARE_RELIABILITY.md)
+
+## Components
+
+| Path | What it is |
+|------|-----------|
+| `install.sh` | Linux/WSL2 installer: drive picker, format confirmation, optional SMB share, Docker + NVIDIA Container Toolkit install, GPU-tiered model selection. Also the platform picker - hands off to `install-macos-arm.sh` if you choose macOS. |
+| `install-windows.ps1` | Windows entry point: elevated disk picker, offers to install WSL2 itself via `winget` if missing, attaches the chosen disk to WSL2, hands off to `install.sh`. |
+| `install-macos-arm.sh` | macOS Apple Silicon entry point: Ollama + Open WebUI via Docker Desktop, SMB share via the macOS Keychain, launchd-based heartbeat/sync. |
+| `share-watcher.ps1` | Windows-only: one-shot check that fires a native toast when the configured network share drops or reconnects mid-session. |
+| `install-share-watcher.ps1` | Registers `share-watcher.ps1` as a Windows Scheduled Task (every 2 minutes, while logged in). |
+| `docs/` | Setup guide, status record, production-readiness breakdown, and the network-share reliability design doc. |
 
 ## Quick start
 
-**Windows** (needs an elevated PowerShell):
-```powershell
-.\install-windows.ps1
-```
-This attaches your chosen physical disk to WSL2 and hands off to
-`install.sh` automatically.
-
-**Native Linux**:
 ```bash
+# Windows (elevated PowerShell)
+.\install-windows.ps1
+
+# Native Linux
 sudo bash install.sh
 ```
 
-**macOS (Apple Silicon)**:
-```bash
-bash install-macos-arm.sh
-```
-See the note at the top of that file - it's a starting point (Ollama +
-Open WebUI work well; ComfyUI image/video generation isn't wired up yet,
-since the Linux/Windows setup uses a CUDA-only image that doesn't run on
-Apple Silicon).
+Open `http://localhost:8080` once the stack finishes starting. For macOS Apple Silicon,
+or the full walkthrough for either path above, see
+[`docs/MASTER_SETUP.md`](docs/MASTER_SETUP.md).
 
-`install.sh` itself asks up front whether you're on Windows/Linux or macOS,
-and hands off to `install-macos-arm.sh` if you pick the latter - so on
-Linux/Windows you only ever need to run one of the two entry points above.
+## A hard rule for this repo
 
-## What it sets up
+**The installer can reformat whatever disk you choose.** It always asks you to pick a
+drive by number and requires typing `YES` before anything destructive happens - read
+that prompt carefully every time, especially on a machine with more than one disk
+attached.
 
-- **Ollama** for chat/coder LLMs, with GPU-aware sizing (checks your VRAM
-  and picks appropriately-sized models)
-- **ComfyUI** for image generation (Linux/Windows only for now)
-- **Open WebUI** as the single web frontend for everything, at
-  `http://localhost:8080`
-- Optionally, a network (SMB/CIFS) share for extra storage, mounted
-  alongside the drive
+---
 
-## Reliability: local-first output, network share is best-effort
-
-If you opt into a network share, generated output is **never written
-directly to it**. Everything renders to the drive first (which never
-depends on network health), and a background timer moves finished files
-over to the share whenever it's reachable. A second timer watches the
-share, retries reconnecting it if it drops, and tells you clearly if it
-can't get back after 10 tries - nothing is ever lost in the meantime, files
-just queue up locally until the share comes back.
-
-On native Linux and macOS that alert reaches you directly (`notify-send` /
-a real desktop notification), since the heartbeat runs in a normal desktop
-session there. On Windows/WSL2 the heartbeat runs headless and can't pop a
-GUI notification itself, so `install-windows.ps1` offers to install
-`install-share-watcher.ps1` - a small scheduled task (runs every 2 minutes
-while you're logged in) that shows a Windows toast the moment the share
-goes down or comes back, without needing to re-run the installer to see it.
-
-If a VPN is active on the Windows host, WSL2's default networking can also
-silently block reaching a LAN device (like the share's server) even though
-the share server itself is fine - `install-windows.ps1` offers to switch
-WSL2 to "mirrored" networking mode to fix this (needs Windows 11 22H2+ or a
-recent Windows 10 WSL update; applies machine-wide, so it's opt-in).
-
-## What you'll be asked
-
-- Which drive to use (lists what it finds, you pick by number)
-- Whether that drive needs to be formatted (only if it isn't already set up
-  for this rig - confirmed explicitly before anything destructive happens)
-- A mount point
-- Whether to set up a network share, and if so: server address, share
-  name, username, password
-- Standard or uncensored/abliterated model variants
-- (GPU permitting) whether to size up to bigger models
-
-## Customizing the system prompt
-
-The installer registers models with a neutral default system prompt. To
-customize it for your own project, look at how `setup_register_models.py`
-is used in the main (non-template) copy of this repo for a full worked
-example - it registers a system prompt, capabilities, and a custom video
-generation action against Open WebUI's own API.
+<sub><img src="docs/logo-icon.png" width="16" height="16" alt="PortaBrain icon" style="vertical-align:middle"> PortaBrain · soullessmonarcs · made with the help of AI</sub>

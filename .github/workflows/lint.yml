@@ -17,8 +17,11 @@ name: lint
 # that broke scheduled-task registration.
 
 on:
+  # Every branch, not just the default one. A linter that only runs after a
+  # merge tells you about problems too late to be useful - and the first
+  # version of this file ran on nothing at all, because it was pushed to a
+  # feature branch that matched none of its own triggers.
   push:
-    branches: [master, main]
   pull_request:
   workflow_dispatch:
 

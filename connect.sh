@@ -200,8 +200,13 @@ fi
 # using the wrong storage. Checked for every mount point this rig might use,
 # not just the one about to be chosen, because the stale entry is what stops
 # that choice being read cleanly in the first place.
+# De-duplicated: the drive's recorded mount point is usually the default one, so
+# without this the same path gets checked twice and every message prints twice.
+CHECKED_MPS=""
 for CANDIDATE_MP in "$DEFAULT_MOUNT_POINT" "$(findmnt -n -o TARGET --source "$PARTITION" 2>/dev/null | head -1)"; do
   [ -z "$CANDIDATE_MP" ] && continue
+  case " $CHECKED_MPS " in *" $CANDIDATE_MP "*) continue ;; esac
+  CHECKED_MPS="$CHECKED_MPS $CANDIDATE_MP"
   STALE="$CANDIDATE_MP/docker"
   if mountpoint -q "$STALE" 2>/dev/null; then
     STALE_SRC="$(findmnt -n -o SOURCE --target "$STALE" 2>/dev/null || true)"
@@ -303,15 +308,25 @@ if ! mountpoint -q "$MOUNT_POINT"; then
   echo "Starting it now would write Docker's storage to this machine's internal disk." >&2
   exit 1
 fi
-MP_DEV="$(findmnt -n -o SOURCE --target "$MOUNT_POINT" 2>/dev/null || true)"
+MP_DEV_RAW="$(findmnt -n -o SOURCE --target "$MOUNT_POINT" 2>/dev/null || true)"
 mkdir -p "$DATA_ROOT"
-DR_DEV="$(findmnt -n -o SOURCE --target "$DATA_ROOT" 2>/dev/null || true)"
+DR_DEV_RAW="$(findmnt -n -o SOURCE --target "$DATA_ROOT" 2>/dev/null || true)"
+# Compare DEVICES, not findmnt's raw strings. containerd bind-mounts its own
+# root as a matter of course, and findmnt reports a bind-mounted subtree as
+# "/dev/sde1[/docker]" while the parent mount is plain "/dev/sde1" - the same
+# device, but different text. Confirmed live: comparing the raw strings made
+# this guard refuse to start Docker on a perfectly healthy rig, because
+# containerd had done exactly what it always does. Failing safe was the right
+# instinct, but a check that cries wolf on the normal case gets disabled by
+# whoever hits it, so it has to be correct rather than merely cautious.
+MP_DEV="${MP_DEV_RAW%%[*}"
+DR_DEV="${DR_DEV_RAW%%[*}"
 if [ -z "$MP_DEV" ] || [ "$MP_DEV" != "$DR_DEV" ]; then
   echo "ERROR: Docker's data-root is not on the drive - refusing to start Docker." >&2
-  echo "  $MOUNT_POINT resolves to device: ${MP_DEV:-unknown}" >&2
-  echo "  $DATA_ROOT resolves to device: ${DR_DEV:-unknown}" >&2
-  echo "These must match. If they don't, something is mounted over or under the" >&2
-  echo "data-root path, or a stale directory is shadowing it." >&2
+  echo "  $MOUNT_POINT resolves to device: ${MP_DEV_RAW:-unknown}" >&2
+  echo "  $DATA_ROOT resolves to device: ${DR_DEV_RAW:-unknown}" >&2
+  echo "These must be the same device. If they aren't, something is mounted over" >&2
+  echo "or under the data-root path, or a stale directory is shadowing it." >&2
   exit 1
 fi
 echo "Data-root verified on the drive ($MP_DEV)."

@@ -34,6 +34,26 @@ fi
 # Linux, where nvidia-smi already lives on the standard PATH.
 export PATH="$PATH:/usr/lib/wsl/lib"
 
+# WSL2 appends the *entire Windows PATH* to the Linux PATH by default, so a
+# bare `command -v <tool>` can be satisfied by a Windows .exe of the same
+# name and wrongly report that a Linux package is installed. Confirmed live:
+# `command -v docker` resolved to
+# "/mnt/c/Program Files/Docker/Docker/resources/bin/docker" - Docker
+# Desktop's *Windows* CLI - so this script concluded Docker Engine was
+# already installed inside the distro, skipped installing it entirely, and
+# then died configuring a containerd that had never been installed.
+#
+# Anything on /mnt/ is a Windows binary reached over the interop bridge, not
+# a Linux install, so it doesn't count for these checks.
+have_linux_cmd() {
+  local resolved
+  resolved="$(command -v "$1" 2>/dev/null)" || return 1
+  case "$resolved" in
+    /mnt/*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 echo "===== Portable AI Rig Setup ====="
 echo ""
 echo "Which platform is this?"
@@ -47,57 +67,286 @@ if [ "$PLATFORM_CHOICE" = "2" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 0. Make sure the tools this script needs actually exist
+# ---------------------------------------------------------------------------
+# A fresh WSL2 Ubuntu image is far more minimal than a normal desktop install
+# and genuinely does NOT ship parted. Confirmed live on a clean Ubuntu-24.04
+# distro: this script ran all the way to the destructive step, had the user
+# type YES to erase the drive, and only THEN died on "parted: command not
+# found" - the worst possible moment to discover a missing package. So check
+# every external tool up front, before anything irreversible is even offered.
+declare -A REQUIRED_PKGS=(
+  [parted]=parted
+  [mkfs.ext4]=e2fsprogs
+  [blkid]=util-linux
+  [lsblk]=util-linux
+  [python3]=python3
+  [curl]=curl
+)
+MISSING_PKGS=""
+for CMD in "${!REQUIRED_PKGS[@]}"; do
+  # have_linux_cmd, not plain `command -v` - Windows ships its own curl.exe
+  # (and often python), which would otherwise satisfy these checks over the
+  # WSL interop bridge without the Linux package actually being present.
+  if ! have_linux_cmd "$CMD"; then
+    MISSING_PKGS="$MISSING_PKGS ${REQUIRED_PKGS[$CMD]}"
+  fi
+done
+if [ -n "$MISSING_PKGS" ]; then
+  # Several commands can map to the same package (blkid/lsblk -> util-linux).
+  MISSING_PKGS="$(printf '%s' "$MISSING_PKGS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
+  echo "== Installing missing prerequisites: $MISSING_PKGS =="
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "ERROR: required tools are missing and this isn't a Debian/Ubuntu system," >&2
+    echo "so they can't be installed automatically: $MISSING_PKGS" >&2
+    echo "Install them with your distro's package manager, then re-run this script." >&2
+    exit 1
+  fi
+  apt-get update -qq
+  # Word-splitting is intended here: $MISSING_PKGS is a space-separated package
+  # list that must become separate arguments.
+  # shellcheck disable=SC2086
+  if ! apt-get install -y -qq $MISSING_PKGS; then
+    echo "ERROR: failed to install prerequisites: $MISSING_PKGS" >&2
+    echo "Check this machine's network/DNS and apt sources, then re-run." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Pick a drive
 # ---------------------------------------------------------------------------
 echo ""
 echo "== Available drives =="
-mapfile -t DISK_LINES < <(lsblk -d -n -o NAME,SIZE,MODEL,TYPE | awk '$4=="disk"')
+# TYPE is asked for as the *second* column, not the last, and MODEL is
+# reassembled from every remaining field. The previous version used
+# 'NAME,SIZE,MODEL,TYPE' filtered on $4=="disk", which quietly breaks the
+# moment a model name contains a space: for "sda 356.9M Virtual Disk disk"
+# field 4 is "Disk", not "disk". Confirmed live - that filter only appeared
+# to work because the target enclosure reported a single-word model, while
+# every WSL virtual disk was excluded by accident rather than by intent. Any
+# real drive reporting e.g. "Samsung Portable SSD T7" would have been
+# silently missing from this list.
+mapfile -t DISK_LINES < <(lsblk -d -n -o NAME,TYPE,SIZE,MODEL | awk '$2=="disk" {
+  name=$1; size=$3; model="";
+  for (i = 4; i <= NF; i++) model = model (i > 4 ? " " : "") $i;
+  if (model == "") model = "(no model reported)";
+  printf "%s\t%s\t%s\n", name, size, model
+}')
 if [ "${#DISK_LINES[@]}" -eq 0 ]; then
   echo "ERROR: no disks found." >&2
   exit 1
 fi
+
+# Under WSL2 the "Virtual Disk" entries are WSL's own internal VHDs, including
+# the ext4 disks backing the installed distros themselves. They are never a
+# valid target - formatting one would destroy a WSL distro - so they're held
+# back from the numbered choices entirely rather than listed and then refused.
+# Listing them made for a genuinely silly picker: eight numbered options where
+# only one could be chosen. They are still *counted* out loud, because
+# silently dropping disks is the bug that hid real drives from this list in
+# the first place.
+IS_WSL=0
+if grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; fi
+
+SELECTABLE=()
+HIDDEN_COUNT=0
 for i in "${!DISK_LINES[@]}"; do
-  echo "  $((i + 1))) ${DISK_LINES[$i]}"
+  D_MODEL="$(printf '%s' "${DISK_LINES[$i]}" | cut -f3)"
+  if [ "$IS_WSL" -eq 1 ] && [ "$D_MODEL" = "Virtual Disk" ]; then
+    HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+    continue
+  fi
+  SELECTABLE+=("${DISK_LINES[$i]}")
 done
-read -r -p "Select the drive to use [1-${#DISK_LINES[@]}]: " DISK_CHOICE
-DISK_NAME="$(echo "${DISK_LINES[$((DISK_CHOICE - 1))]}" | awk '{print $1}')"
-DEVICE="/dev/${DISK_NAME}"
+
+for i in "${!SELECTABLE[@]}"; do
+  D_NAME="$(printf '%s' "${SELECTABLE[$i]}" | cut -f1)"
+  D_SIZE="$(printf '%s' "${SELECTABLE[$i]}" | cut -f2)"
+  D_MODEL="$(printf '%s' "${SELECTABLE[$i]}" | cut -f3)"
+  printf "  %s) %-6s %8s  %s\n" "$((i + 1))" "$D_NAME" "$D_SIZE" "$D_MODEL"
+done
+if [ "$HIDDEN_COUNT" -gt 0 ]; then
+  echo "  ($HIDDEN_COUNT WSL internal disk(s) hidden - they can never be used for this)"
+fi
+
+if [ "${#SELECTABLE[@]}" -eq 0 ]; then
+  echo "" >&2
+  echo "ERROR: no usable drives found - only WSL's own internal disks are present." >&2
+  echo "Attach the external drive to WSL2 first (install-windows.ps1 does this for you)." >&2
+  exit 1
+fi
+
+# Validated in a loop: the previous version fed whatever was typed straight
+# into an array index, so a stray or out-of-range answer produced an empty
+# device name and a confusing failure much later on, with "/dev/" as the
+# target.
+DEVICE=""
+while [ -z "$DEVICE" ]; do
+  read -r -p "Select the drive to use [1-${#SELECTABLE[@]}]: " DISK_CHOICE
+  if ! printf '%s' "$DISK_CHOICE" | grep -qE '^[0-9]+$'; then
+    echo "Please enter a number between 1 and ${#SELECTABLE[@]}."
+    continue
+  fi
+  if [ "$DISK_CHOICE" -lt 1 ] || [ "$DISK_CHOICE" -gt "${#SELECTABLE[@]}" ]; then
+    echo "There's no option $DISK_CHOICE - pick between 1 and ${#SELECTABLE[@]}."
+    continue
+  fi
+  DEVICE="/dev/$(printf '%s' "${SELECTABLE[$((DISK_CHOICE - 1))]}" | cut -f1)"
+done
 echo "Using $DEVICE"
 
-read -r -p "Mount point for this drive [$DEFAULT_MOUNT_POINT]: " MOUNT_POINT
+echo ""
+echo "Where should this drive appear inside Linux? This is a local folder path"
+echo "on this machine, not a network location - the equivalent of giving the"
+echo "drive a letter on Windows. Press Enter for the default."
+read -r -p "Local path for this drive [$DEFAULT_MOUNT_POINT]: " MOUNT_POINT
 MOUNT_POINT="${MOUNT_POINT:-$DEFAULT_MOUNT_POINT}"
 
 # ---------------------------------------------------------------------------
 # 2. Format if this drive isn't already set up, otherwise just use it
 # ---------------------------------------------------------------------------
-EXISTING="$(blkid -L "$LABEL" 2>/dev/null || true)"
-if [ -n "$EXISTING" ] && [ "$EXISTING" != "${DEVICE}1" ]; then
-  echo "Note: a different partition ($EXISTING) already has the label '$LABEL'."
-fi
-
+# Two shapes of drive are supported, and both are detected rather than assumed:
+#
+#   encrypted: partition is a LUKS2 container labelled PORTABLEAI-LUKS, whose
+#              inner filesystem is ext4 labelled PORTABLEAI
+#   plain:     partition is ext4 labelled PORTABLEAI directly
+#
+# Two labels rather than one because the inner label is invisible while the
+# container is locked - there has to be something findable from the outside -
+# and reusing the same name for both would make `blkid -L` ambiguous the moment
+# the drive is unlocked. Plain drives stay supported so rigs built before
+# encryption existed keep working untouched.
 PARTITION="${DEVICE}1"
-if ! blkid "$PARTITION" 2>/dev/null | grep -q "LABEL=\"$LABEL\""; then
+MAPPER_NAME="portableai"
+FS_DEVICE=""
+IS_ENCRYPTED=0
+
+PART_TYPE="$(blkid -o value -s TYPE "$PARTITION" 2>/dev/null || true)"
+PART_LABEL="$(blkid -o value -s LABEL "$PARTITION" 2>/dev/null || true)"
+
+if [ "$PART_TYPE" = "crypto_LUKS" ]; then
+  echo "$PARTITION is an encrypted (LUKS) rig drive - unlocking it."
+  IS_ENCRYPTED=1
+  if [ -e "/dev/mapper/$MAPPER_NAME" ]; then
+    echo "Already unlocked."
+  else
+    UNLOCKED=0
+    for try in 1 2 3; do
+      read -r -s -p "Passphrase for this drive: " DRIVE_PASS; echo ""
+      if printf '%s' "$DRIVE_PASS" | cryptsetup luksOpen --key-file - "$PARTITION" "$MAPPER_NAME"; then
+        UNLOCKED=1; DRIVE_PASS=""; break
+      fi
+      DRIVE_PASS=""
+      echo "  Wrong passphrase (attempt $try of 3)."
+    done
+    [ "$UNLOCKED" -eq 1 ] || { echo "ERROR: could not unlock $PARTITION." >&2; exit 1; }
+  fi
+  FS_DEVICE="/dev/mapper/$MAPPER_NAME"
+
+elif [ "$PART_LABEL" = "$LABEL" ]; then
+  echo "$PARTITION is already labeled '$LABEL' (unencrypted), using it as-is."
+  FS_DEVICE="$PARTITION"
+
+else
   echo ""
   echo "!!! WARNING !!!"
   echo "$DEVICE does not look like it's set up for this rig yet."
-  echo "Continuing will ERASE EVERYTHING on $DEVICE and create one ext4 partition."
+  echo "Continuing will ERASE EVERYTHING on $DEVICE."
   read -r -p "Type YES (in capitals) to confirm and continue: " CONFIRM
   if [ "$CONFIRM" != "YES" ]; then
     echo "Aborted, nothing was changed."
     exit 1
   fi
-  echo "== Partitioning and formatting $DEVICE =="
-  parted -s "$DEVICE" mklabel gpt mkpart primary ext4 0% 100%
+
+  echo ""
+  echo "== Encrypt this drive? =="
+  echo "Everything on a portable drive - every chat and prompt in Open WebUI's"
+  echo "database, and every generated image - is otherwise readable by anyone who"
+  echo "plugs it into any machine. Encrypting means a passphrase is required each"
+  echo "time you connect it."
+  echo ""
+  echo "Understand before choosing:"
+  echo "  - Lose the passphrase and the data is gone. There is no recovery."
+  echo "  - The rig can no longer start unattended after a reboot: something has"
+  echo "    to type the passphrase."
+  echo "  - macOS cannot open LUKS volumes, so an encrypted drive is Linux/WSL2"
+  echo "    only."
+  read -r -p "Encrypt this drive? [Y/n]: " WANT_CRYPT
+
+  echo "== Partitioning $DEVICE =="
+  parted -s "$DEVICE" mklabel gpt mkpart primary 0% 100%
   sleep 2
-  mkfs.ext4 -L "$LABEL" "$PARTITION"
-else
-  echo "$PARTITION is already labeled '$LABEL', using it as-is."
+
+  if [[ ! "$WANT_CRYPT" =~ ^[Nn]$ ]]; then
+    if ! have_linux_cmd cryptsetup; then
+      echo "== Installing cryptsetup =="
+      apt-get update -qq
+      # cryptsetup-bin, not cryptsetup: the full package drags in
+      # initramfs-tools, dracut and plymouth - a boot splash screen, inside a
+      # WSL2 distro that has no boot process to splash. cryptsetup-bin is the
+      # same binary without the boot-time integration this rig never uses.
+      apt-get install -y -qq --no-install-recommends cryptsetup-bin || {
+        echo "ERROR: couldn't install cryptsetup - can't encrypt the drive." >&2
+        echo "Re-run and answer 'n' to set the drive up unencrypted instead." >&2
+        exit 1
+      }
+    fi
+    # dm-crypt has to actually exist in this kernel. WSL2's own kernel does
+    # ship it (verified: 'dmsetup targets' reports crypt v1.28.0), but a
+    # custom or cut-down kernel might not, and finding that out after
+    # formatting would be a bad time.
+    modprobe dm_crypt 2>/dev/null || true
+    if ! dmsetup targets 2>/dev/null | grep -q '^crypt'; then
+      echo "ERROR: this kernel has no dm-crypt support, so LUKS can't be used here." >&2
+      echo "Re-run and answer 'n' to set the drive up unencrypted instead." >&2
+      exit 1
+    fi
+
+    while :; do
+      read -r -s -p "Choose a passphrase for this drive: " P1; echo ""
+      read -r -s -p "Repeat it: " P2; echo ""
+      if [ -z "$P1" ]; then echo "  Empty passphrase - try again."; continue; fi
+      if [ "$P1" != "$P2" ]; then echo "  They don't match - try again."; continue; fi
+      if [ "${#P1}" -lt 8 ]; then
+        read -r -p "  That's under 8 characters. Use it anyway? [y/N]: " SHORT_OK
+        [[ "$SHORT_OK" =~ ^[Yy]$ ]] || continue
+      fi
+      break
+    done
+
+    echo "== Creating the encrypted container on $PARTITION =="
+    # Passphrase piped on stdin, never as an argument - arguments are visible
+    # in the process list to every user on the machine. printf without a
+    # trailing newline so the key material is exactly the passphrase, matching
+    # what an interactive `cryptsetup luksOpen` would produce.
+    if ! printf '%s' "$P1" | cryptsetup luksFormat --type luks2 --label "${LABEL}-LUKS" --batch-mode --key-file - "$PARTITION"; then
+      P1=""; P2=""
+      echo "ERROR: luksFormat failed." >&2
+      exit 1
+    fi
+    if ! printf '%s' "$P1" | cryptsetup luksOpen --key-file - "$PARTITION" "$MAPPER_NAME"; then
+      P1=""; P2=""
+      echo "ERROR: could not open the container just created." >&2
+      exit 1
+    fi
+    P1=""; P2=""
+    IS_ENCRYPTED=1
+    FS_DEVICE="/dev/mapper/$MAPPER_NAME"
+    echo "Encrypted container created and unlocked."
+  else
+    echo "Setting the drive up WITHOUT encryption."
+    FS_DEVICE="$PARTITION"
+  fi
+
+  echo "== Creating the ext4 filesystem =="
+  mkfs.ext4 -L "$LABEL" "$FS_DEVICE"
 fi
 
 mkdir -p "$MOUNT_POINT"
 if ! mountpoint -q "$MOUNT_POINT"; then
-  echo "== Mounting $PARTITION at $MOUNT_POINT =="
-  mount "$PARTITION" "$MOUNT_POINT"
+  echo "== Mounting $FS_DEVICE at $MOUNT_POINT =="
+  mount "$FS_DEVICE" "$MOUNT_POINT"
 else
   echo "Already mounted at $MOUNT_POINT"
 fi
@@ -106,6 +355,12 @@ STACK_DIR="$MOUNT_POINT/stack"
 mkdir -p "$STACK_DIR" "$MOUNT_POINT/models/llm" "$MOUNT_POINT/models/image" \
   "$MOUNT_POINT/workspace/output" "$MOUNT_POINT/workspace/projects"
 
+# Recorded on the drive so connect.sh can mount it back at the same place on
+# any machine. The absolute paths baked into docker-compose.yml below depend on
+# this choice, so a later connect that guessed a different default would bring
+# up a stack whose volumes all pointed at empty directories.
+printf '%s\n' "$MOUNT_POINT" > "$STACK_DIR/.mount_point"
+
 # ---------------------------------------------------------------------------
 # 3. Optional network (SMB/CIFS) share for extra storage
 # ---------------------------------------------------------------------------
@@ -113,15 +368,43 @@ echo ""
 read -r -p "Mount a network (SMB/CIFS) share for extra storage too? [y/N]: " WANT_SMB
 SMB_MOUNT=""
 if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
-  read -r -p "Server address (e.g. 192.168.1.10 or myserver.local): " SMB_HOST
-  read -r -p "Share name (e.g. Media, Backups): " SMB_SHARE
+  # Both of these are normalised, because pasting a whole UNC path into the
+  # server prompt is the obvious mistake and it used to produce a silently
+  # broken result. Confirmed live: entering "\\192.0.2.10\MyShare" built
+  # the device string "//\\192.0.2.10\MyShare/MyShare", which not
+  # only failed to mount but - once written to /etc/fstab - made WSL's own
+  # `mount -a` at distro start fail every time, so entering the distro at all
+  # started erroring. `nofail` does not protect against a malformed device
+  # string, so the input has to be cleaned up here instead.
+  normalise_smb_part() {
+    local v="$1"
+    v="${v//\\//}"                      # backslashes -> forward slashes
+    v="${v#"${v%%[!/]*}"}"              # strip every leading slash
+    printf '%s' "${v%%/*}"              # keep the first segment only
+  }
+
+  echo "Just the server itself below - no leading backslashes, no share name."
+  SMB_HOST=""
+  while [ -z "$SMB_HOST" ]; do
+    read -r -p "Server address (e.g. 192.168.1.10 or myserver.local): " SMB_HOST_RAW
+    SMB_HOST="$(normalise_smb_part "$SMB_HOST_RAW")"
+    [ -z "$SMB_HOST" ] && echo "Please enter a server address."
+  done
+
+  SMB_SHARE=""
+  while [ -z "$SMB_SHARE" ]; do
+    read -r -p "Share name (e.g. Media, Backups): " SMB_SHARE_RAW
+    SMB_SHARE="$(normalise_smb_part "$SMB_SHARE_RAW")"
+    [ -z "$SMB_SHARE" ] && echo "Please enter a share name."
+  done
   read -r -p "Username: " SMB_USER
   read -r -s -p "Password: " SMB_PASS
   echo ""
   read -r -p "Local mount point [/mnt/portableai-share]: " SMB_MOUNT
   SMB_MOUNT="${SMB_MOUNT:-/mnt/portableai-share}"
+  echo "Will use //${SMB_HOST}/${SMB_SHARE} -> ${SMB_MOUNT}"
 
-  if ! command -v mount.cifs >/dev/null 2>&1; then
+  if ! have_linux_cmd mount.cifs; then
     echo "Installing cifs-utils..."
     apt-get update -qq && apt-get install -y -qq cifs-utils
   fi
@@ -135,17 +418,34 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   unset SMB_PASS
 
   mkdir -p "$SMB_MOUNT"
-  FSTAB_LINE="//${SMB_HOST}/${SMB_SHARE} ${SMB_MOUNT} cifs credentials=${CRED_FILE},uid=$(id -u ${SUDO_USER:-root}),gid=$(id -g ${SUDO_USER:-root}),vers=3.0,file_mode=0644,dir_mode=0755,_netdev,nofail,x-systemd.mount-timeout=10 0 0"
-  if ! grep -qF "//${SMB_HOST}/${SMB_SHARE}" /etc/fstab 2>/dev/null; then
-    echo "$FSTAB_LINE" >> /etc/fstab
-  fi
+  SMB_OPTS="credentials=${CRED_FILE},uid=$(id -u "${SUDO_USER:-root}"),gid=$(id -g "${SUDO_USER:-root}"),vers=3.0,file_mode=0644,dir_mode=0755"
 
   echo "== Mounting network share =="
-  if mount -a 2>/dev/null && mountpoint -q "$SMB_MOUNT"; then
+  # Test-mounted explicitly BEFORE anything goes into /etc/fstab. A bad fstab
+  # entry isn't a harmless leftover: WSL runs `mount -a` when the distro
+  # starts, so an entry that can't mount makes entering the distro itself
+  # report an error every time. Only a mount that has actually worked gets
+  # persisted for automatic remounting; a failed one is still recorded so the
+  # heartbeat timer can retry it by path, but with `noauto` so `mount -a`
+  # leaves it alone and startup stays clean.
+  SMB_MOUNTED=0
+  if mount -t cifs "//${SMB_HOST}/${SMB_SHARE}" "$SMB_MOUNT" -o "$SMB_OPTS"; then
+    mountpoint -q "$SMB_MOUNT" && SMB_MOUNTED=1
+  fi
+
+  if [ "$SMB_MOUNTED" -eq 1 ]; then
     echo "Network share mounted at $SMB_MOUNT"
     mkdir -p "$SMB_MOUNT/comfyui-output"
+    FSTAB_OPTS="${SMB_OPTS},_netdev,nofail,x-systemd.mount-timeout=10"
   else
-    echo "WARNING: network share did not mount yet. Check the server address, share name, and credentials - the heartbeat timer set up below will keep retrying automatically." >&2
+    echo "WARNING: the network share did not mount. Check the server address, share name, and credentials." >&2
+    echo "         Recording it with 'noauto' so it cannot break distro startup; the heartbeat timer will keep retrying." >&2
+    FSTAB_OPTS="${SMB_OPTS},_netdev,nofail,noauto,x-systemd.mount-timeout=10"
+  fi
+
+  FSTAB_LINE="//${SMB_HOST}/${SMB_SHARE} ${SMB_MOUNT} cifs ${FSTAB_OPTS} 0 0"
+  if ! grep -qF "//${SMB_HOST}/${SMB_SHARE} ${SMB_MOUNT} " /etc/fstab 2>/dev/null; then
+    echo "$FSTAB_LINE" >> /etc/fstab
   fi
 
   # ComfyUI always writes to the drive (see the compose file below), never
@@ -261,8 +561,13 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "== Checking Docker Engine =="
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker not found, installing..."
+# Tests for `dockerd`, not `docker`. This script needs a real Docker *Engine*
+# running inside this distro (it starts docker.service and containerd itself
+# further down), and dockerd is the marker for that - whereas a `docker` CLI
+# can easily be present without any local engine at all, which is exactly
+# what Docker Desktop's Windows CLI on the interop PATH looks like.
+if ! have_linux_cmd dockerd; then
+  echo "Docker Engine not found in this distro, installing..."
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
@@ -274,7 +579,9 @@ if ! command -v docker >/dev/null 2>&1; then
   apt-get update -qq
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin
 else
-  echo "Docker already installed: $(docker --version)"
+  # `|| true` because the version banner is cosmetic - a weird exit code from
+  # it must never abort the install under `set -e`.
+  echo "Docker Engine already installed: $(dockerd --version 2>/dev/null || echo 'version unknown')"
 fi
 
 # Installing docker-ce via apt auto-enables docker.socket/docker.service/
@@ -318,12 +625,26 @@ else
 fi
 
 echo "== Pointing containerd's data root at the drive (so images live there too) =="
-CONTAINERD_ROOT="$MOUNT_POINT/docker/containerd"
-mkdir -p "$CONTAINERD_ROOT"
-if [ ! -f /etc/containerd/config.toml ] || ! grep -q "^root = \"$CONTAINERD_ROOT\"" /etc/containerd/config.toml; then
-  systemctl stop docker docker.socket containerd 2>/dev/null || true
-  containerd config default > /etc/containerd/config.toml
-  sed -i "s#^root = .*#root = \"$CONTAINERD_ROOT\"#" /etc/containerd/config.toml
+# Guarded on containerd actually existing, and /etc/containerd is created
+# rather than assumed. Confirmed live: with Docker Engine skipped (see the
+# have_linux_cmd note above), containerd was never installed, so this step
+# died on "/etc/containerd/config.toml: No such file or directory" - the
+# redirect can't create a missing parent directory. The package normally
+# ships that directory, so this only ever bit a machine where the Docker
+# install had been skipped, but an install script shouldn't assume a
+# directory it never created.
+if ! have_linux_cmd containerd; then
+  echo "WARNING: containerd isn't installed, so its data root can't be pointed at the drive."
+  echo "         Docker images may end up on WSL2's internal disk instead of the drive."
+else
+  CONTAINERD_ROOT="$MOUNT_POINT/docker/containerd"
+  mkdir -p "$CONTAINERD_ROOT"
+  mkdir -p /etc/containerd
+  if [ ! -f /etc/containerd/config.toml ] || ! grep -q "^root = \"$CONTAINERD_ROOT\"" /etc/containerd/config.toml; then
+    systemctl stop docker docker.socket containerd 2>/dev/null || true
+    containerd config default > /etc/containerd/config.toml
+    sed -i "s#^root = .*#root = \"$CONTAINERD_ROOT\"#" /etc/containerd/config.toml
+  fi
 fi
 
 echo "== Pointing Docker's own data-root at the drive =="
@@ -365,6 +686,60 @@ fi
 # 5. Write the compose stack and support files
 # ---------------------------------------------------------------------------
 echo ""
+# ---------------------------------------------------------------------------
+# Pinned container images
+# ---------------------------------------------------------------------------
+# Every image here is pinned to an immutable tag. Previously all three floated
+# on mutable tags (:latest, :main, :cu124-slim), which quietly made this
+# project's central promise - "build it once, move it between machines" -
+# untrue: two installs a month apart got different software, and one of them
+# could be broken on arrival.
+#
+# That is not hypothetical. Confirmed live: yanwk/comfyui-boot:cu124-slim was
+# last rebuilt 2025-10-13, its variant has since been DELETED from the upstream
+# repository, and a fresh install of it crash-loops on
+# "ModuleNotFoundError: No module named 'comfy_aimdo'" because its bundled
+# ComfyUI needs a module its own nine-month-old site-packages don't have.
+# Meanwhile an existing rig kept working purely because it had cached the image
+# back when it still worked.
+#
+# To update: change a tag here, re-run install.sh, and test before relying on
+# it. Deliberately a manual, deliberate act rather than something that happens
+# to you overnight.
+OLLAMA_IMAGE="ollama/ollama:0.32.5"
+# cu126-slim is the maintained successor to the abandoned cu124-slim line.
+COMFYUI_IMAGE="yanwk/comfyui-boot:cu126-slim-20260727"
+# v0.11.0 is the exact version verified working on real hardware for this repo.
+OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:v0.11.0"
+
+# ComfyUI does not live in its image - the image carries a bundled copy which
+# its entrypoint copies to /root/ComfyUI ONLY if nothing is there yet, and
+# thereafter reports "Using existing ComfyUI in user storage". Since /root is
+# bind-mounted from the drive, ComfyUI persists across image changes. That is
+# usually what you want (custom nodes survive), but it means changing the
+# COMFYUI_IMAGE above does NOT by itself replace a broken ComfyUI: the old copy
+# on the drive keeps being used, with the new image's Python packages
+# underneath it. Record which image installed the current copy so a mismatch
+# can be reported rather than silently producing a confusing crash loop.
+COMFYUI_IMAGE_MARKER="$STACK_DIR/.comfyui_image"
+if [ -f "$COMFYUI_IMAGE_MARKER" ] && [ -f "$MOUNT_POINT/stack/comfyui-root/ComfyUI/main.py" ]; then
+  PREV_COMFYUI_IMAGE="$(cat "$COMFYUI_IMAGE_MARKER" 2>/dev/null || true)"
+  if [ "$PREV_COMFYUI_IMAGE" != "$COMFYUI_IMAGE" ]; then
+    echo ""
+    echo "== NOTE: the ComfyUI image has changed =="
+    echo "  was: $PREV_COMFYUI_IMAGE"
+    echo "  now: $COMFYUI_IMAGE"
+    echo "ComfyUI itself lives on the drive, not in the image, so the existing copy"
+    echo "will keep being used against the new image's Python environment. If ComfyUI"
+    echo "fails to start (a 'ModuleNotFoundError' is the usual sign), reset it with:"
+    echo "  rm -rf $MOUNT_POINT/stack/comfyui-root/ComfyUI"
+    echo "then re-run this script. That discards custom nodes, so it is left to you"
+    echo "rather than done automatically - your models and outputs are untouched."
+    echo ""
+  fi
+fi
+printf '%s\n' "$COMFYUI_IMAGE" > "$COMFYUI_IMAGE_MARKER"
+
 echo "== Writing stack files to $STACK_DIR =="
 GPU_DEPLOY_BLOCK=""
 if [ "$HAS_GPU" = true ]; then
@@ -378,7 +753,7 @@ fi
 cat > "$STACK_DIR/docker-compose.yml" <<EOF
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: $OLLAMA_IMAGE
     container_name: ollama
     restart: unless-stopped
     environment:
@@ -399,7 +774,7 @@ services:
     networks: [ai]
 
   comfyui:
-    image: yanwk/comfyui-boot:cu124-slim
+    image: $COMFYUI_IMAGE
     container_name: comfyui
     restart: unless-stopped
     environment:
@@ -423,7 +798,7 @@ services:
     networks: [ai]
 
   openwebui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: $OPENWEBUI_IMAGE
     container_name: openwebui
     restart: unless-stopped
     ports: ["8080:8080"]
@@ -486,28 +861,58 @@ echo ""
 echo "Pick a chat/coder model pair to install:"
 echo "  1) Standard instruction-tuned models (Qwen2.5 7B, safe defaults)"
 echo "  2) Uncensored/abliterated variants (no content filter - your responsibility)"
-read -r -p "Select [1/2, default 1]: " MODEL_CHOICE
-MODEL_CHOICE="${MODEL_CHOICE:-1}"
+# Same reasoning as the assistant name below: remembered on the drive, so
+# moving machines and pressing Enter can't silently switch an abliterated rig
+# back to the standard models (which would pull a whole second pair rather
+# than reuse the weights already sitting on the drive).
+STORED_MODEL_CHOICE=""
+if [ -f "$STACK_DIR/.model_choice" ]; then
+  STORED_MODEL_CHOICE="$(cat "$STACK_DIR/.model_choice" 2>/dev/null || true)"
+fi
+case "$STORED_MODEL_CHOICE" in
+  1|2) ;;
+  *) STORED_MODEL_CHOICE="" ;;
+esac
+DEFAULT_MODEL_CHOICE="${STORED_MODEL_CHOICE:-1}"
+read -r -p "Select [1/2, default $DEFAULT_MODEL_CHOICE]: " MODEL_CHOICE
+MODEL_CHOICE="${MODEL_CHOICE:-$DEFAULT_MODEL_CHOICE}"
+printf '%s\n' "$MODEL_CHOICE" > "$STACK_DIR/.model_choice"
+
+# Named out in full so the cleanup loop after the pulls knows every tag this
+# installer is capable of choosing. Moving the drive to a machine with
+# different VRAM re-tiers the rig, and without a list like this there is no
+# way to tell "a model the user installed themselves" apart from "the pair
+# this script pulled for the tier we've just moved away from".
+SMALL_CHAT_STD="qwen2.5:7b-instruct-q4_K_M"
+SMALL_CODER_STD="qwen2.5-coder:7b-instruct-q4_K_M"
+SMALL_CHAT_ABL="huihui_ai/qwen2.5-abliterate:7b-instruct-q4_K_M"
+SMALL_CODER_ABL="huihui_ai/qwen2.5-coder-abliterate:7b-instruct-q4_K_M"
+MEDIUM_CHAT_STD="qwen2.5:14b-instruct-q4_K_M"
+MEDIUM_CODER_STD="qwen2.5-coder:14b-instruct-q4_K_M"
+MEDIUM_CHAT_ABL="huihui_ai/qwen3-abliterated:14b-q4_K_M"
+MEDIUM_CODER_ABL="huihui_ai/qwen2.5-coder-abliterate:14b-instruct-q4_K_M"
+ALL_KNOWN_MODELS="$SMALL_CHAT_STD $SMALL_CODER_STD $SMALL_CHAT_ABL $SMALL_CODER_ABL"
+ALL_KNOWN_MODELS="$ALL_KNOWN_MODELS $MEDIUM_CHAT_STD $MEDIUM_CODER_STD $MEDIUM_CHAT_ABL $MEDIUM_CODER_ABL"
 
 if [ "$TOTAL_VRAM_MB" -ge 10000 ]; then
   TIER="medium"
   NUM_CTX=24576
   if [ "$MODEL_CHOICE" = "2" ]; then
-    CHAT_MODEL="huihui_ai/qwen3-abliterated:14b-q4_K_M"
-    CODER_MODEL="huihui_ai/qwen2.5-coder-abliterate:14b-instruct-q4_K_M"
+    CHAT_MODEL="$MEDIUM_CHAT_ABL"
+    CODER_MODEL="$MEDIUM_CODER_ABL"
   else
-    CHAT_MODEL="qwen2.5:14b-instruct-q4_K_M"
-    CODER_MODEL="qwen2.5-coder:14b-instruct-q4_K_M"
+    CHAT_MODEL="$MEDIUM_CHAT_STD"
+    CODER_MODEL="$MEDIUM_CODER_STD"
   fi
 else
   TIER="small"
   NUM_CTX=16384
   if [ "$MODEL_CHOICE" = "2" ]; then
-    CHAT_MODEL="huihui_ai/qwen2.5-abliterate:7b-instruct-q4_K_M"
-    CODER_MODEL="huihui_ai/qwen2.5-coder-abliterate:7b-instruct-q4_K_M"
+    CHAT_MODEL="$SMALL_CHAT_ABL"
+    CODER_MODEL="$SMALL_CODER_ABL"
   else
-    CHAT_MODEL="qwen2.5:7b-instruct-q4_K_M"
-    CODER_MODEL="qwen2.5-coder:7b-instruct-q4_K_M"
+    CHAT_MODEL="$SMALL_CHAT_STD"
+    CODER_MODEL="$SMALL_CODER_STD"
   fi
 fi
 
@@ -538,11 +943,56 @@ for MODEL in "$CHAT_MODEL" "$CODER_MODEL"; do
   docker exec ollama ollama create "$MODEL" -f /tmp/Modelfile
 done
 
+# The image/video sizes chosen from this machine's VRAM further up are actually
+# applied here. Until this step existed they were computed and silently thrown
+# away - shellcheck flagged IMAGE_SIZE, IMAGE_STEPS and the four VIDEO_*
+# variables as assigned-but-never-read, and it was right: the GPU tiering looked
+# implemented but only ever affected which models got pulled, never the
+# generation defaults. An 8GB card was left asking for 1024x1024 at 40 steps,
+# which is an out-of-memory error rather than an image.
+echo "== Applying image/video defaults for this GPU (max single GPU: ${MAX_VRAM_MB}MB) =="
+if docker cp "$SCRIPT_DIR/setup_tune_config.py" openwebui:/app/backend/setup_tune_config.py; then
+  docker exec -w /app/backend \
+    -e IMAGE_SIZE="$IMAGE_SIZE" -e IMAGE_STEPS="$IMAGE_STEPS" \
+    -e VIDEO_WIDTH="$VIDEO_WIDTH" -e VIDEO_HEIGHT="$VIDEO_HEIGHT" \
+    -e VIDEO_LENGTH="$VIDEO_LENGTH" -e VIDEO_STEPS="$VIDEO_STEPS" \
+    openwebui python3 setup_tune_config.py \
+    || echo "warning: couldn't apply image/video defaults - set them by hand in Admin Settings -> Images." >&2
+else
+  echo "warning: setup_tune_config.py not found next to install.sh - skipping image/video defaults." >&2
+fi
+
+# Plugging the drive into a machine with different VRAM re-tiers the rig and
+# pulls the pair that machine can actually run - but nothing used to remove
+# the pair it moved away from, so every hop between a big and a small machine
+# left another ~9-18GB of unusable weights behind on the drive, forever. Only
+# tags this installer itself can choose are ever considered, so anything
+# pulled by hand is left alone.
+for OLD_MODEL in $ALL_KNOWN_MODELS; do
+  if [ "$OLD_MODEL" != "$CHAT_MODEL" ] && [ "$OLD_MODEL" != "$CODER_MODEL" ]; then
+    if docker exec ollama ollama list 2>/dev/null | grep -qF "$OLD_MODEL"; then
+      echo "== Removing $OLD_MODEL (not needed for the $TIER tier on this machine) =="
+      docker exec ollama ollama rm "$OLD_MODEL" || true
+    fi
+  fi
+done
+
 echo "$TIER" > "$STACK_DIR/.gpu_tier"
 
 echo ""
-read -r -p "What would you like to name your AI assistant? [Assistant]: " AGENT_NAME
-AGENT_NAME="${AGENT_NAME:-Assistant}"
+# Defaults to the name already stored on the drive, not to "Assistant". This
+# script runs again on every machine the drive is plugged into, so a hardcoded
+# default meant that pressing Enter on a second machine silently *renamed* an
+# assistant that already had a name - the drive is meant to carry its own
+# identity between machines, not be re-christened by whoever plugs it in.
+STORED_AGENT_NAME=""
+if [ -f "$STACK_DIR/.agent_name" ]; then
+  STORED_AGENT_NAME="$(cat "$STACK_DIR/.agent_name" 2>/dev/null || true)"
+fi
+DEFAULT_AGENT_NAME="${STORED_AGENT_NAME:-Assistant}"
+read -r -p "What would you like to name your AI assistant? [$DEFAULT_AGENT_NAME]: " AGENT_NAME
+AGENT_NAME="${AGENT_NAME:-$DEFAULT_AGENT_NAME}"
+printf '%s\n' "$AGENT_NAME" > "$STACK_DIR/.agent_name"
 
 echo "== Registering models in Open WebUI as '$AGENT_NAME' (system prompt + image-generation support) =="
 docker cp "$SCRIPT_DIR/setup_register_models.py" openwebui:/app/backend/setup_register_models.py
@@ -552,6 +1002,16 @@ docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MOD
 echo ""
 echo "Done. Open WebUI: http://localhost:8080"
 echo "GPU tier: $TIER (chat: $CHAT_MODEL, coder: $CODER_MODEL)"
+if [ "$IS_ENCRYPTED" -eq 1 ]; then
+  echo ""
+  echo "*** This drive is ENCRYPTED ***"
+  echo "  - The passphrase is required every time you connect it. There is no"
+  echo "    recovery if you lose it: the models can be re-downloaded, but your"
+  echo "    chats and generated output cannot."
+  echo "  - The auto-connect-at-logon task cannot unlock it, so after a reboot you"
+  echo "    need to run connect.ps1 yourself."
+  echo "  - macOS cannot open LUKS volumes, so this drive is Linux/WSL2 only."
+fi
 echo ""
 echo "Next steps:"
 echo "  - Create your admin account at http://localhost:8080 on first visit."

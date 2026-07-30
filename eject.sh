@@ -35,6 +35,23 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# Re-execute inside systemd's (PID 1's) mount namespace if we aren't already in
+# it. A `wsl.exe` session can be given its own private mount namespace, and a
+# mount made there is INVISIBLE to systemd-managed daemons - confirmed live,
+# where it caused dockerd to build its entire data-root on WSL2's internal disk
+# while the real drive sat mounted and ignored in another namespace. See the
+# long note in connect.sh for the full sequence.
+if [ -r /proc/1/ns/mnt ] && [ "$(readlink /proc/self/ns/mnt)" != "$(readlink /proc/1/ns/mnt)" ]; then
+  if command -v nsenter >/dev/null 2>&1; then
+    echo "== Entering systemd's mount namespace =="
+    exec nsenter --mount=/proc/1/ns/mnt --wd=/ -- bash "$0" "$@"
+  else
+    echo "ERROR: private mount namespace and no nsenter available - mounts made" >&2
+    echo "here would be invisible to Docker. Install util-linux and re-run." >&2
+    exit 1
+  fi
+fi
+
 # Duplicated in each of these scripts on purpose - they run independently,
 # straight off the drive, so none can rely on sourcing a shared library.
 # WSL2 appends the whole Windows PATH to the Linux PATH, so a bare

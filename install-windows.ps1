@@ -293,7 +293,12 @@ if ($mirroredEnabled -and -not (Get-NetFirewallRule -DisplayName "WSL2 Mirrored 
 $systemDiskNumber = $null
 try {
     $systemDiskNumber = (Get-Partition -DriveLetter $env:SystemDrive.TrimEnd(':') -ErrorAction SilentlyContinue).DiskNumber
-} catch { }
+} catch {
+    # Not fatal: without this the system disk simply isn't labelled or blocked in
+    # the picker below, which is worse but not broken. Recorded rather than
+    # swallowed silently, so a machine where this fails is diagnosable.
+    Write-Warning "Couldn't determine which disk holds $env:SystemDrive ($($_.Exception.Message)). The picker will not be able to warn you off your system disk - read it especially carefully."
+}
 
 $diskNumber = $null
 $disk = $null

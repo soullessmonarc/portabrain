@@ -45,8 +45,15 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
 # bug the share-watcher task had.
 $TaskName = "PortableAI Auto-Connect ($Distro)"
 
+# Read into a script-scoped flag here rather than referencing $Quiet from inside
+# the function. It works either way at runtime - PowerShell's scoping means a
+# nested function can see the caller's variables - but relying on that makes the
+# dependency invisible, and PSScriptAnalyzer rightly reported $Quiet as unused
+# because nothing in this scope touched it.
+$script:ShowInfo = -not $Quiet
+
 function Write-Info([string]$Message) {
-    if (-not $Quiet) { Write-Host $Message }
+    if ($script:ShowInfo) { Write-Host $Message }
 }
 
 if ($Action -eq "unregister") {

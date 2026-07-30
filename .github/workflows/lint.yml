@@ -85,16 +85,26 @@ jobs:
       - name: PSScriptAnalyzer (errors and warnings are fatal)
         shell: pwsh
         run: |
-          # PSAvoidUsingWriteHost is excluded deliberately: these scripts are
-          # interactive, operator-facing tools whose entire job is to narrate
-          # what they are doing to a human watching a console. Write-Host is
-          # correct here, not a smell.
-          # PSAvoidUsingPlainTextForPassword / ConvertToSecureString are
-          # excluded because mount.cifs accepts nothing but a plaintext
-          # credentials file - there is no secure variant to migrate to. That
-          # file is mode 600 and shredded on eject; see SECURITY.md.
+          # Three rules are excluded, each for a stated reason. Everything else
+          # is fatal - the point is to catch real defects, and it already has
+          # (an $action/$Action collision that broke task registration, and two
+          # empty catch blocks that were discarding diagnosable failures).
+          #
+          # PSAvoidUsingWriteHost: these are interactive, operator-facing
+          #   scripts whose job is to narrate progress to a human watching a
+          #   console. Write-Host is the correct tool, not a smell.
+          # PSAvoidUsingPlainTextForPassword / ConvertToSecureStringWithPlainText:
+          #   mount.cifs accepts nothing but a plaintext credentials file. There
+          #   is no secure variant to migrate to. That file is mode 600 and is
+          #   shredded on eject; see SECURITY.md.
+          # PSUseShouldProcessForStateChangingFunctions: fires on two internal
+          #   helpers in disconnect.ps1 (Stop-DockerDesktop,
+          #   Start-DockerDesktopIfNeeded). They are script-local, never
+          #   exported, and Stop-DockerDesktop already gates on explicit user
+          #   consent via a dialog - so -WhatIf/-Confirm plumbing would add
+          #   ceremony without adding a safety property the code lacks.
           $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning `
-            -ExcludeRule PSAvoidUsingWriteHost,PSAvoidUsingPlainTextForPassword,PSAvoidUsingConvertToSecureStringWithPlainText
+            -ExcludeRule PSAvoidUsingWriteHost,PSAvoidUsingPlainTextForPassword,PSAvoidUsingConvertToSecureStringWithPlainText,PSUseShouldProcessForStateChangingFunctions
           if ($results) {
             $results | ForEach-Object {
               Write-Host "::error file=$($_.ScriptName),line=$($_.Line)::$($_.RuleName): $($_.Message)"

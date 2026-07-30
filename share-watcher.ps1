@@ -53,9 +53,15 @@ function Show-Toast([string]$Title, [string]$Message) {
         $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
     } catch {
-        # Toast delivery needs an interactive desktop session - if this runs
-        # with nobody logged on, just skip it silently rather than error out
-        # the scheduled task every cycle.
+        # Toast delivery needs an interactive desktop session, so this genuinely
+        # should not fail the run - if nobody is logged on there is no desktop to
+        # notify and erroring out would just mark the scheduled task failed every
+        # couple of minutes forever.
+        #
+        # Written to the verbose stream rather than left as a bare empty block:
+        # silently discarding the reason makes "why did I never get a toast?"
+        # undiagnosable. Run this script by hand with -Verbose to see it.
+        Write-Verbose "Toast not delivered: $($_.Exception.Message)"
     }
 }
 

@@ -7,32 +7,89 @@ supported platform.
 
 **Prerequisites** (one-time per machine):
 
-- WSL2 itself. If missing, `install-windows.ps1` will offer to install it via
-  `winget install Microsoft.WSL` - decline and it errors out with the manual command
-  instead of guessing.
-- An Ubuntu distro under WSL2. If missing, the personal-rig fork of this installer
-  (`Connect AI.ps1`, not part of this generic template) can bootstrap one
-  non-interactively; on a fresh machine running this template directly, install one
-  yourself first: `wsl --install -d Ubuntu`.
-- The NVIDIA driver on the Windows host itself (not inside WSL2), if the machine has an
+- **Nothing but the GPU driver.** `install-windows.ps1` installs WSL2 itself (via
+  `wsl --install`, not winget - on a machine where the underlying Windows optional
+  features were never enabled, only that form actually enables them) and bootstraps an
+  Ubuntu distro with a Linux user for you. Enabling WSL for the first time can still
+  require one reboot; the script detects that and tells you rather than continuing.
+- The **NVIDIA driver on the Windows host** (not inside WSL2), if the machine has an
   NVIDIA GPU. This is the one prerequisite that can't be scripted safely - install it
   from NVIDIA directly.
 
 **Steps:**
 
-1. Open an elevated PowerShell (`Terminal (Admin)`).
-2. Run:
+1. Open an **elevated** PowerShell (`Terminal (Admin)`).
+2. `cd` to the folder you cloned this repo into.
+3. Run:
    ```powershell
-   .\install-windows.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1
    ```
-3. Pick the physical disk to use when listed - **this can reformat whatever disk you
-   choose**, so double-check the number.
-4. It attaches the disk to WSL2 and hands off to `install.sh` automatically, which asks
-   the remaining questions (mount point, optional network share, model tier).
-5. Optionally, when it offers to install `install-share-watcher.ps1`'s scheduled task,
-   say yes if you configured a network share - it's what surfaces a toast if that share
-   drops mid-session.
-6. Open WebUI is at `http://localhost:8080` once the stack finishes starting.
+   The `-ExecutionPolicy Bypass` is **required, not optional**: Windows desktop editions
+   ship with a `Restricted` policy that refuses to run any `.ps1`, so `.\install-windows.ps1`
+   on its own fails with *"running scripts is disabled on this system"*. Invoking it this
+   way affects only that one process and changes nothing on your system.
+4. Pick the physical disk when listed. **This can reformat whatever disk you choose.**
+   The picker labels your Windows system disk and refuses it, and hides WSL's own internal
+   virtual disks, but it cannot know which of your *other* drives you care about. You must
+   type `YES` in capitals before anything is erased.
+5. Choose whether to **encrypt** the drive (see below).
+6. It attaches the disk to WSL2 and hands off to `install.sh`, which asks the rest: local
+   mount path, optional network share, standard or uncensored models, and a name for your
+   assistant.
+7. Say yes to the share-watcher scheduled task if you configured a network share - that's
+   what raises a toast if the share drops mid-session.
+8. Open WebUI is at `http://localhost:8080` once the stack finishes starting. Expect the
+   first run to take a while: roughly 10GB of container images and 9GB of model weights.
+
+### Day-to-day, after that first install
+
+You do **not** re-run the installer to use the rig. From the repo folder, elevated:
+
+```powershell
+# bring it up (after a reboot, or on another machine)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\connect.ps1
+
+# ALWAYS run this before unplugging the drive
+powershell -NoProfile -ExecutionPolicy Bypass -File .\disconnect.ps1
+```
+
+`connect.ps1` attaches and mounts the drive, starts Docker and the stack, holds the WSL
+instance open, and registers a logon task so the rig comes back ~45s after you log in. It
+reuses everything already on the drive - no re-downloading.
+
+`disconnect.ps1` is not optional politeness. The drive holds a mounted ext4 filesystem
+**and Docker's live data-root**; pulling it while that is running risks corrupting the
+image store. The script stops the stack, stops the daemons, unmounts, locks the drive
+again if encrypted, releases the disk back to Windows, removes the logon task, and wipes
+this machine's copy of any share credentials. It refuses to release the disk if the
+unmount fails.
+
+Add `-Distro <name>` to any of these if you are not using the default distro name.
+
+### Encryption
+
+The installer offers to put the drive inside a LUKS2 container, with a passphrase you
+choose then and enter on every connect. Without it, everything on the drive - including
+every chat and prompt in Open WebUI's plain SQLite database - is readable by anyone who
+plugs it in.
+
+Three things to understand before saying yes:
+
+- **The rig can no longer return unattended after a reboot.** Something has to type the
+  passphrase, so the logon task can't do it for you.
+- **macOS support is lost.** macOS cannot open LUKS volumes.
+- **There is no recovery.** Lose the passphrase and the data is gone. Models can be
+  re-downloaded; your chats and generated output cannot.
+
+Unencrypted drives are fully supported, and both shapes are detected automatically.
+
+### If you have a drive built by an older version
+
+`docker-compose.yml` is generated by the installer and lives **on the drive**, so
+`connect.ps1` never rewrites it. A drive built before images were pinned keeps using
+floating tags - including an abandoned ComfyUI image that crash-loops. Re-run
+`install-windows.ps1` on that drive (it will detect the existing filesystem and **not**
+reformat it) to regenerate the compose file with pinned tags.
 
 ## Native Linux
 

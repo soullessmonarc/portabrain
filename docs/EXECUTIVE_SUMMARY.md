@@ -18,11 +18,23 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.1.0)
+## Current status (v0.3.0)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
   heartbeat.
+- **Day-to-day lifecycle:** `connect.ps1` / `disconnect.ps1` (plus `connect.sh` /
+  `eject.sh`) bring the rig up and shut it down cleanly, with a WSL keep-alive and a
+  logon task so it survives a reboot. The installer is a one-time step, not something
+  you re-run to use the rig.
+- **Optional at-rest encryption:** the drive can be built inside a LUKS2 container.
+  Trade-off: no unattended restart, and no macOS support.
+- **Chat and coding work; image and video generation currently do not.** The upstream
+  ComfyUI image this project used was abandoned and crash-loops. Images are now pinned to
+  the maintained line, but that fix has not yet been verified on real hardware.
+- **Portability itself is still unverified.** The install/connect/disconnect cycle has
+  been proven on a single machine; moving the drive to a different one - the entire point
+  of the project - has not been tested yet.
 - **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
   share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. ComfyUI
   (image/video generation) is **not yet wired up** - the Linux/Windows setup uses a

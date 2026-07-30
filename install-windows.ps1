@@ -206,6 +206,7 @@ Write-Host "== Checking WSL2 networking mode =="
 $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
 $wslConfigText = if (Test-Path $wslConfigPath) { Get-Content $wslConfigPath -Raw } else { "" }
 $mirroredEnabled = $wslConfigText -match '(?im)^\s*networkingMode\s*=\s*mirrored\s*$'
+$needsWslRestart = $false
 if (-not $mirroredEnabled) {
     Write-Host "WSL2's default networking can block LAN/network-share access while a VPN is active on this machine (a known WSL2 limitation)."
     Write-Warning "Enabling 'mirrored' mode changes a machine-wide WSL2 setting (affects every WSL distro, not just this rig) and needs Windows 11 22H2+ or a recent Windows 10 WSL update. Skip if unsure - you can remove the line from $wslConfigPath later either way."
@@ -218,10 +219,43 @@ if (-not $mirroredEnabled) {
         }
         Set-Content -Path $wslConfigPath -Value $updated
         Write-Host "Set networkingMode=mirrored in $wslConfigPath - restarting WSL2 for it to take effect..."
-        wsl --shutdown
-        Start-Sleep -Seconds 3
+        $needsWslRestart = $true
         $mirroredEnabled = $true
     }
+}
+
+# Second half of the mirrored-mode fix, and the one that actually made
+# localhost:8080 work: networkingMode=mirrored ALONE is not enough for
+# reliable Windows -> WSL2 localhost forwarding. Without this key, a TCP
+# handshake to localhost:8080 succeeds (Test-NetConnection reports
+# TcpTestSucceeded) but the HTTP request then hangs with no data ever coming
+# back - confirmed live, and a genuinely confusing symptom to debug because
+# a port check "passes" while nothing actually works.
+if ($mirroredEnabled -and $wslConfigText -notmatch '(?im)^\s*hostAddressLoopback\s*=\s*true\s*$') {
+    Write-Host "Mirrored networking needs 'hostAddressLoopback=true' for localhost:8080 to reach Open WebUI - adding it."
+    $wslConfigText = if (Test-Path $wslConfigPath) { Get-Content $wslConfigPath -Raw } else { "" }
+    if ($wslConfigText -match '(?im)^\[experimental\]\s*$') {
+        $updated = $wslConfigText -replace '(?im)(^\[experimental\]\s*$)', "`$1`nhostAddressLoopback=true"
+    } else {
+        $updated = $wslConfigText.TrimEnd() + "`n`n[experimental]`nhostAddressLoopback=true`n"
+    }
+    Set-Content -Path $wslConfigPath -Value $updated
+    $needsWslRestart = $true
+}
+
+# .wslconfig changes only take effect on the next WSL2 VM start, so restart
+# once here if either of the two blocks above changed something. Docker gets
+# stopped gracefully first: abruptly killing a possibly-mid-write docker
+# daemon is what corrupted the original rig's overlay2/containerd storage
+# during this project's development, and it costs nothing to be careful.
+if ($needsWslRestart) {
+    $prevEAP3 = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    wsl -d $Distro -u root --cd ~ -- systemctl stop docker.socket docker.service containerd.service 2>$null
+    $ErrorActionPreference = $prevEAP3
+    Write-Host "== Restarting WSL2 to apply the .wslconfig change(s) =="
+    wsl --shutdown
+    Start-Sleep -Seconds 3
 }
 
 # Mirrored mode's tradeoff, confirmed live: NAT mode's "localhost
@@ -243,16 +277,68 @@ if ($mirroredEnabled -and -not (Get-NetFirewallRule -DisplayName "WSL2 Mirrored 
     }
 }
 
-Write-Host "== Available disks =="
-$disks = Get-Disk | Sort-Object Number
-$disks | ForEach-Object {
-    Write-Host ("  {0}) Disk {0} - {1} ({2:N0} GB) - {3}" -f $_.Number, $_.FriendlyName, ($_.Size / 1GB), $_.OperationalStatus)
-}
-Write-Host ""
-Write-Warning "Pick carefully - the installer can reformat whatever disk you choose."
-$diskNumber = Read-Host "Enter the disk number to use"
+# The list is rebuilt on every pass, and the answer is validated against a
+# FRESH read rather than the list as printed. Two reasons, both seen live:
+#   - An external/USB drive plugged in moments earlier can still be settling
+#     when the list is built and be missing from it entirely. Confirmed live:
+#     the target disk never appeared in this list at all, yet
+#     'Get-Disk -Number 2' resolved it perfectly a few seconds later once the
+#     user had finished typing. The old code listed once and accepted any
+#     number, so it silently accepted a disk it had never shown.
+#   - The reverse is just as bad: accepting a number from a stale list for a
+#     drive that has since been unplugged.
+# Also labels the Windows system disk explicitly and refuses it outright -
+# previously the only disks offered on this machine were the user's own system
+# and data drives, so "pick carefully" was advice with no safe answer.
+$systemDiskNumber = $null
+try {
+    $systemDiskNumber = (Get-Partition -DriveLetter $env:SystemDrive.TrimEnd(':') -ErrorAction SilentlyContinue).DiskNumber
+} catch { }
 
-$disk = Get-Disk -Number $diskNumber
+$diskNumber = $null
+$disk = $null
+while ($null -eq $diskNumber) {
+    Write-Host ""
+    Write-Host "== Available disks =="
+    foreach ($d in (Get-Disk | Sort-Object Number)) {
+        $notes = @()
+        if ($null -ne $systemDiskNumber -and $d.Number -eq $systemDiskNumber) { $notes += "WINDOWS SYSTEM DISK - cannot be used" }
+        if ($d.BusType -eq "USB") { $notes += "USB / removable" }
+        $suffix = if ($notes.Count -gt 0) { "  <-- " + ($notes -join "; ") } else { "" }
+        Write-Host ("  {0}) Disk {0} - {1} ({2:N0} GB) - {3}{4}" -f $d.Number, $d.FriendlyName, ($d.Size / 1GB), $d.OperationalStatus, $suffix)
+    }
+    Write-Host ""
+    Write-Warning "Pick carefully - the installer can reformat whatever disk you choose."
+    $answer = Read-Host "Enter the disk number to use, or 'r' to rescan"
+
+    if ($answer -match '^\s*[Rr]\s*$') { continue }
+
+    $parsed = 0
+    if (-not [int]::TryParse(($answer -replace '\s', ''), [ref]$parsed)) {
+        Write-Warning "'$answer' isn't a disk number. Try again."
+        continue
+    }
+
+    $candidate = Get-Disk -Number $parsed -ErrorAction SilentlyContinue
+    if (-not $candidate) {
+        Write-Warning "There is no disk $parsed on this machine right now. Try again, or 'r' to rescan."
+        continue
+    }
+    if ($null -ne $systemDiskNumber -and $parsed -eq $systemDiskNumber) {
+        Write-Warning "Disk $parsed is this machine's Windows system disk ($env:SystemDrive). Refusing to use it - pick a different disk."
+        continue
+    }
+
+    Write-Host ""
+    Write-Host "  Selected: Disk $parsed - $($candidate.FriendlyName), $([math]::Round($candidate.Size/1GB))GB, bus $($candidate.BusType)"
+    Write-Host "  Everything on this disk will be erased."
+    $confirmDisk = Read-Host "Is that the correct drive? [y/N]"
+    if ($confirmDisk -match '^[Yy]') {
+        $diskNumber = $parsed
+        $disk = $candidate
+    }
+}
+
 Write-Host "Using disk $diskNumber ($($disk.FriendlyName), $([math]::Round($disk.Size/1GB))GB)"
 
 if (-not $disk.IsOffline) {
@@ -277,6 +363,53 @@ $linuxScriptPath = "/mnt/" + $ScriptDir.Substring(0, 1).ToLower() + "/" + $Scrip
 # which WSL can't map to a Linux path at all) into the new session's
 # starting directory.
 wsl -d $Distro -u root --cd ~ -- bash -c "sleep 2; bash '$linuxScriptPath/install.sh'"
+# install.sh runs under `set -euo pipefail`, so it aborts with a nonzero exit
+# on any failure - but nothing here used to look at that, so a completely
+# failed install carried straight on to register the share watcher and print
+# "Done ... Open WebUI should be at http://localhost:8080". Confirmed live: a
+# run that died on a missing `parted` still reported success. Reporting a
+# working stack that doesn't exist is worse than the original failure, so
+# stop here instead.
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "install.sh failed inside WSL2 (exit code $LASTEXITCODE) - see its output above for the actual error. Stopping here: the stack is NOT set up, so there is nothing for the share watcher to watch and http://localhost:8080 will not work. Fix the reported problem and re-run this script."
+    exit 1
+}
+
+Write-Host "== Starting WSL keep-alive =="
+# WSL2 stops a distro's entire VM instance within seconds of the last attached
+# wsl.exe process exiting - even with systemd and an enabled docker.service
+# inside it. When that instance goes down it takes dockerd, every container,
+# AND the bare-attached physical disk with it, so the drive's mount point
+# simply ceases to exist. Confirmed live: mid-install the drive was mounted
+# with 1.5GB of pulled images, and minutes later /mnt/<drive>/stack did not
+# exist at all and docker.sock was gone, because nothing was holding the
+# instance open. A trivial always-attached process is what actually keeps the
+# rig running between commands.
+$keepAlivePidFile = Join-Path $ScriptDir ".keepalive.pid"
+if (Test-Path $keepAlivePidFile) {
+    $oldPid = Get-Content $keepAlivePidFile -ErrorAction SilentlyContinue
+    if ($oldPid) { Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue }
+}
+$keepAlive = Start-Process -FilePath "wsl.exe" -ArgumentList "-d", $Distro, "--cd", "~", "--", "sleep", "infinity" -WindowStyle Hidden -PassThru
+Set-Content -Path $keepAlivePidFile -Value $keepAlive.Id
+Write-Host "Keep-alive running (PID $($keepAlive.Id)). Without this the stack stops as soon as this script exits."
+
+# The keep-alive cannot survive a restart - WSL2 tears down the whole VM
+# instance, taking the containers and the drive's attachment with it - so
+# restart survival has to come from the Windows side. Registered here as part of
+# the install, removed again by disconnect.ps1.
+Write-Host "== Setting up restart survival =="
+$autoConnectScript = Join-Path $ScriptDir "autoconnect-task.ps1"
+if (Test-Path $autoConnectScript) {
+    & $autoConnectScript -Action register -Distro $Distro
+} else {
+    Write-Warning "autoconnect-task.ps1 not found next to this script - the rig will not come back up by itself after a reboot. Run connect.ps1 manually, or restore that file."
+}
+
+Write-Host ""
+Write-Host "Day-to-day from here on:"
+Write-Host "  .\connect.ps1      - bring the rig up (after a reboot, or on another machine)"
+Write-Host "  .\disconnect.ps1   - ALWAYS run this before unplugging the drive"
 
 Write-Host ""
 $installWatcher = Read-Host "Install a lightweight scheduled task that pops a toast if the network share (if you set one up) goes down or reconnects mid-session? [Y/n]"

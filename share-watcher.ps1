@@ -64,15 +64,34 @@ if (Test-Path $StateFile) {
     try { $wasDown = [bool](Get-Content $StateFile -Raw | ConvertFrom-Json).down } catch { $wasDown = $false }
 }
 
-$isDown = $false
-try {
-    wsl -d $Distro --cd ~ -- test -f /var/lib/portableai/share-alerted
-    $isDown = ($LASTEXITCODE -eq 0)
-} catch {
-    # WSL not reachable (distro stopped, disk not attached, etc.) - nothing
-    # to report either way, leave state as-is.
+# Only ever probe a distro that is ALREADY running. A bare
+# `wsl -d <distro> -- <cmd>` against a stopped distro doesn't just fail - it
+# BOOTS THE ENTIRE WSL2 VM to run the command. On a 2-minute schedule that
+# means this watcher would silently start WSL2 over and over, forever,
+# including right after a clean eject whose entire purpose was to leave it
+# shut down.
+#
+# This also fixes the detection logic it replaces: a native command
+# returning a nonzero exit code doesn't throw, so the try/catch here could
+# never actually catch "WSL unreachable" the way it intended - a stopped
+# distro read as $isDown = $false, i.e. indistinguishable from a healthy
+# share, which could fire a bogus "Share Reconnected" toast for a rig that
+# wasn't even running.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$runningRaw = wsl.exe -l --running -q 2>$null
+$ErrorActionPreference = $prevEAP
+# wsl.exe emits UTF-16, which PowerShell 5.1 decodes a byte at a time and
+# leaves interleaved NULs in - strip them before matching.
+$running = (($runningRaw -join "`n") -replace "`0", "")
+if ($running -notmatch [regex]::Escape($Distro)) {
+    # Rig isn't running. Nothing to report, and deliberately no state write,
+    # so the last real state is still there when it comes back up.
     exit 0
 }
+
+wsl -d $Distro --cd ~ -- test -f /var/lib/portableai/share-alerted
+$isDown = ($LASTEXITCODE -eq 0)
 
 if ($isDown -and -not $wasDown) {
     Show-Toast "Portable AI Rig - Network Share Down" `

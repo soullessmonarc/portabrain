@@ -7,6 +7,7 @@
 **A portable brain you can plug into any machine.**
 
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow)
+[![lint](https://github.com/soullessmonarc/portabrain/actions/workflows/lint.yml/badge.svg)](https://github.com/soullessmonarc/portabrain/actions/workflows/lint.yml)
 ![Bash 5](https://img.shields.io/badge/bash-5-4EAA25?logo=gnubash&logoColor=white)
 ![PowerShell 5.1+](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-required-2496ED?logo=docker&logoColor=white)
@@ -15,18 +16,23 @@
 
 </div>
 
-There's no CI badge because there's no CI in this repo yet, and no license badge beyond
-"private" because no public licence has been granted - see
-[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for what that actually
-means in practice.
+That lint badge covers **static analysis only** - shellcheck, PSScriptAnalyzer and
+python syntax. There is no integration test and there cannot usefully be one: this
+project attaches a physical disk to WSL2 and reformats it, which no hosted runner can
+reproduce. A green tick means the code parses and is free of known bad patterns, not
+that the rig works. The licence badge says "private" because no public licence has been
+granted.
 
 > [!IMPORTANT]
-> This has been verified through live, interactive runs against real hardware, not an
-> automated test suite - there is no CI in this repo. "Beta" here means the Linux/WSL2
-> and Windows paths are complete and exercised; macOS Apple Silicon support is
-> real but partial (no ComfyUI yet). See
-> [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the full,
-> itemised breakdown of what's verified versus what isn't.
+> **What is actually verified:** the full install → connect → disconnect lifecycle, run
+> on a blank SSD in a fresh WSL distro. That round found ~20 real bugs, now fixed.
+>
+> **What is not:** portability itself. Everything was proven on *one* machine - moving
+> the drive to a different machine, which is the entire point, is still untested. And
+> **ComfyUI is currently broken upstream**, so image and video generation are unproven;
+> chat and coding work. See
+> [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the itemised
+> breakdown.
 
 A self-contained Ollama + ComfyUI + Open WebUI stack that lives entirely on one
 external drive, so you can build it once and move it between machines. Nothing in here
@@ -44,7 +50,11 @@ or auto-detected from the hardware in front of it.
 | Path | What it is |
 |------|-----------|
 | `install.sh` | Linux/WSL2 installer: drive picker, format confirmation, optional SMB share, Docker + NVIDIA Container Toolkit install, GPU-tiered model selection. Also the platform picker - hands off to `install-macos-arm.sh` if you choose macOS. |
-| `install-windows.ps1` | Windows entry point: elevated disk picker, offers to install WSL2 itself via `winget` if missing, attaches the chosen disk to WSL2, hands off to `install.sh`. |
+| `install-windows.ps1` | Windows entry point: elevated disk picker, offers to install WSL2 and the Ubuntu distro itself if missing, attaches the chosen disk to WSL2, hands off to `install.sh`. Run once per machine. |
+| `connect.ps1` / `connect.sh` | Bring the rig **back up** — after a reboot, or on a machine already set up once. Attaches and mounts the drive, starts the daemons in the right order, brings the stack up, holds the WSL2 instance open. Asks nothing, installs nothing, needs no network. |
+| `disconnect.ps1` / `eject.sh` | Clean shutdown before unplugging: stops the stack, stops the daemons whose data-root is on the drive, unmounts, releases the raw disk from WSL2. |
+| `autoconnect-task.ps1` | Restart survival. Registers a Windows Task Scheduler task that runs `connect.ps1` at logon, so a reboot doesn't leave the rig down. Added by the installer and by `connect.ps1`, removed by `disconnect.ps1`. |
+| `setup_tune_config.py` | Applies the image/video generation defaults chosen from this machine's VRAM (1024×1024/40 steps on a big card, 512×512/20 on a small one) to Open WebUI. |
 | `install-macos-arm.sh` | macOS Apple Silicon entry point: Ollama + Open WebUI via Docker Desktop, SMB share via the macOS Keychain, launchd-based heartbeat/sync. |
 | `share-watcher.ps1` | Windows-only: one-shot check that fires a native toast when the configured network share drops or reconnects mid-session. |
 | `install-share-watcher.ps1` | Registers `share-watcher.ps1` as a Windows Scheduled Task (every 2 minutes, while logged in). |
@@ -52,24 +62,72 @@ or auto-detected from the hardware in front of it.
 
 ## Quick start
 
-```bash
-# Windows (elevated PowerShell)
-.\install-windows.ps1
+**First time on a machine** — installs WSL2/Docker and sets up the drive:
 
+```powershell
+# Windows: elevated PowerShell, from this folder
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1
+```
+
+```bash
 # Native Linux
 sudo bash install.sh
 ```
+
+**Every time after that** — bring it up, and shut it down before unplugging:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\connect.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\disconnect.ps1
+```
+
+> [!IMPORTANT]
+> The `-ExecutionPolicy Bypass` is not decoration. Windows desktop editions ship with
+> a `Restricted` policy that refuses to run any `.ps1` at all, so `.\install-windows.ps1`
+> on its own fails on a stock machine with "running scripts is disabled on this system".
+> Invoking it this way affects only that one process - it changes nothing on your system.
+> If you would rather relax it permanently, `Set-ExecutionPolicy -Scope CurrentUser
+> RemoteSigned` is the usual choice, but that is a security setting and it is your call.
+
+The installer registers a scheduled task so the rig comes back up ~45 seconds after you
+log on. `disconnect.ps1` removes that task again; `connect.ps1` restores it.
 
 Open `http://localhost:8080` once the stack finishes starting. For macOS Apple Silicon,
 or the full walkthrough for either path above, see
 [`docs/MASTER_SETUP.md`](docs/MASTER_SETUP.md).
 
-## A hard rule for this repo
+## Encryption
+
+The installer offers to put the drive inside a **LUKS2 container**, with a passphrase you
+choose at setup and enter on every connect. Worth understanding why that is offered
+rather than a password prompt in the script: Open WebUI stores every chat and prompt in a
+plain SQLite file on the drive, so on an unencrypted drive all of it is readable by
+anyone who plugs it in. A script-level password would not change that, because the
+filesystem can simply be mounted directly.
+
+Encryption costs two things: the rig can no longer come back **unattended** after a
+reboot (something has to type the passphrase), and macOS support is lost entirely, since
+macOS cannot open LUKS volumes. There is also no recovery if you forget the passphrase -
+models can be re-downloaded, chats and generated output cannot. Unencrypted drives stay
+fully supported. See [`SECURITY.md`](SECURITY.md).
+
+## Two hard rules for this repo
 
 **The installer can reformat whatever disk you choose.** It always asks you to pick a
 drive by number and requires typing `YES` before anything destructive happens - read
 that prompt carefully every time, especially on a machine with more than one disk
-attached.
+attached. The Windows picker refuses your system disk outright and labels removable
+drives, but it cannot know which drive you *meant*.
+
+**Run `disconnect.ps1` before you unplug.** The drive holds a mounted ext4 filesystem
+with Docker's live data-root on it. Pulling it while the stack is running risks
+corrupting the image store - not a theoretical concern, it is how this project's own
+development rig got corrupted once already.
+
+> [!NOTE]
+> The keep-alive that holds the rig open does not survive a reboot or logout - WSL2
+> tears the whole VM instance down, taking the containers and the drive's mount with
+> it. That is expected; run `connect.ps1` again afterwards.
 
 ---
 

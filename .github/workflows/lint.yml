@@ -1,0 +1,115 @@
+name: lint
+
+# Static checks only. There is no integration test here and there cannot
+# usefully be one: this project's whole job is to attach a physical disk to
+# WSL2, reformat it, and install Docker inside a Windows Subsystem for Linux
+# distro. None of that is reproducible on a hosted runner, so pretending
+# otherwise with a green tick would be worse than having no test at all.
+#
+# What this DOES catch is worth having. Two real functional bugs in this repo
+# were found by exactly these tools rather than by testing:
+#   - Six variables (IMAGE_SIZE, IMAGE_STEPS, VIDEO_*) computed from the
+#     machine's VRAM and then never used, so GPU tiering silently did nothing
+#     for image generation.
+#   - A malformed `# shellcheck disable=` directive which made shellcheck stop
+#     analysing the rest of install.sh, hiding the above.
+# Plus a PowerShell variable-name collision ($action vs the $Action parameter)
+# that broke scheduled-task registration.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck (bash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends shellcheck
+          shellcheck --version
+
+      - name: Check syntax parses
+        run: |
+          fail=0
+          for f in *.sh; do
+            if ! bash -n "$f"; then echo "::error file=$f::bash -n failed"; fail=1; fi
+          done
+          exit $fail
+
+      - name: shellcheck (errors and warnings are fatal)
+        run: shellcheck --severity=warning --format=gcc *.sh
+
+      - name: shellcheck (style, advisory only)
+        continue-on-error: true
+        run: shellcheck --severity=style --format=gcc *.sh
+
+  powershell:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+
+      - name: Check every script parses
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Filter *.ps1 | ForEach-Object {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+            if ($errs) {
+              $failed = $true
+              foreach ($e in $errs) {
+                Write-Host "::error file=$($_.Name),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: PSScriptAnalyzer (errors and warnings are fatal)
+        shell: pwsh
+        run: |
+          # PSAvoidUsingWriteHost is excluded deliberately: these scripts are
+          # interactive, operator-facing tools whose entire job is to narrate
+          # what they are doing to a human watching a console. Write-Host is
+          # correct here, not a smell.
+          # PSAvoidUsingPlainTextForPassword / ConvertToSecureString are
+          # excluded because mount.cifs accepts nothing but a plaintext
+          # credentials file - there is no secure variant to migrate to. That
+          # file is mode 600 and shredded on eject; see SECURITY.md.
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning `
+            -ExcludeRule PSAvoidUsingWriteHost,PSAvoidUsingPlainTextForPassword,PSAvoidUsingConvertToSecureStringWithPlainText
+          if ($results) {
+            $results | ForEach-Object {
+              Write-Host "::error file=$($_.ScriptName),line=$($_.Line)::$($_.RuleName): $($_.Message)"
+            }
+            $results | Format-Table -AutoSize
+            exit 1
+          }
+          Write-Host "PSScriptAnalyzer clean."
+
+  python:
+    name: python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        # Syntax only. These scripts import open_webui, which exists only inside
+        # the running container, so they cannot be imported or executed here.
+        run: python -m compileall -q $(ls *.py) && echo "python syntax OK"

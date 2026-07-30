@@ -6,6 +6,15 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Python bytecode - the .py files here are copied into a container and run
+# there, never imported locally; any __pycache__ is a by-product of syntax
+# checking.
+__pycache__/
+*.pyc
+
+# Local state written by connect.ps1 next to itself
+.keepalive.pid
+
 # This repo only ships the installer scripts themselves - the stack files
 # they generate (docker-compose.yml, credentials files, systemd units) are
 # written onto the target machine's own drive at install time, never here.

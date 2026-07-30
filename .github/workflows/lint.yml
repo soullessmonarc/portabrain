@@ -64,7 +64,31 @@ jobs:
 
       - name: Install PSScriptAnalyzer
         shell: pwsh
-        run: Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+        # Retried, because a bare Install-Module is not reliable: the PowerShell
+        # Gallery intermittently answers "No match was found for the specified
+        # search criteria and module name 'PSScriptAnalyzer'" even though the
+        # module obviously exists. Seen live - the same commit failed on one run
+        # and passed on another minutes later. A lint badge that fails at random
+        # trains you to ignore it, which is worse than having no badge.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # NuGet provider and an explicitly-trusted gallery, so nothing waits on
+          # an interactive "are you sure" prompt that can never be answered here.
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+          $installed = $false
+          foreach ($attempt in 1..4) {
+            try {
+              Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck -ErrorAction Stop
+              $installed = $true
+              break
+            } catch {
+              Write-Host "Attempt ${attempt} failed: $($_.Exception.Message)"
+              if ($attempt -lt 4) { Start-Sleep -Seconds (5 * $attempt) }
+            }
+          }
+          if (-not $installed) { throw "PSScriptAnalyzer could not be installed after 4 attempts." }
+          Import-Module PSScriptAnalyzer
+          "PSScriptAnalyzer $((Get-Module PSScriptAnalyzer).Version) ready."
 
       - name: Check every script parses
         shell: pwsh

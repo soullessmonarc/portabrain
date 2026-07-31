@@ -24,13 +24,16 @@ that the rig works. The licence badge says "private" because no public licence h
 granted.
 
 > [!IMPORTANT]
-> **What is actually verified:** the full install → connect → disconnect lifecycle, run
-> on a blank SSD in a fresh WSL distro. That round found ~20 real bugs, now fixed.
+> **What is verified on real hardware:** the full install → connect → disconnect
+> lifecycle on a blank SSD in a fresh WSL distro; a reconnect reusing what is already on
+> the drive rather than re-downloading it; ComfyUI running; and the video-generation
+> Action installing and binding to the models.
 >
 > **What is not:** portability itself. Everything was proven on *one* machine - moving
-> the drive to a different machine, which is the entire point, is still untested. And
-> **ComfyUI is currently broken upstream**, so image and video generation are unproven;
-> chat and coding work. See
+> the drive to a different machine, which is the entire point, is still untested. Video
+> *generation* has not been run end-to-end (the Action and its wiring are verified; the
+> pipeline itself is not), and **LUKS encryption has never been exercised on a real
+> drive** - only against a loopback device. See
 > [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the itemised
 > breakdown.
 
@@ -55,6 +58,8 @@ or auto-detected from the hardware in front of it.
 | `disconnect.ps1` / `eject.sh` | Clean shutdown before unplugging: stops the stack, stops the daemons whose data-root is on the drive, unmounts, releases the raw disk from WSL2. |
 | `autoconnect-task.ps1` | Restart survival. Registers a Windows Task Scheduler task that runs `connect.ps1` at logon, so a reboot doesn't leave the rig down. Added by the installer and by `connect.ps1`, removed by `disconnect.ps1`. |
 | `setup_tune_config.py` | Applies the image/video generation defaults chosen from this machine's VRAM (1024×1024/40 steps on a big card, 512×512/20 on a small one) to Open WebUI. |
+| `video_gen_action.py` | Open WebUI Action: a "Generate Video (LTX)" button under each reply, driving ComfyUI's LTX-Video pipeline. Animates a just-generated or attached image if there is one, otherwise generates from the reply text. |
+| `setup_video_action.py` | Installs and activates that Action, and keeps it up to date on re-runs. |
 | `install-macos-arm.sh` | macOS Apple Silicon entry point: Ollama + Open WebUI via Docker Desktop, SMB share via the macOS Keychain, launchd-based heartbeat/sync. |
 | `share-watcher.ps1` | Windows-only: one-shot check that fires a native toast when the configured network share drops or reconnects mid-session. |
 | `install-share-watcher.ps1` | Registers `share-watcher.ps1` as a Windows Scheduled Task (every 2 minutes, while logged in). |

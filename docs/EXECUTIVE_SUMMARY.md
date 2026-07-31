@@ -29,9 +29,13 @@ the machine is just a host.
   you re-run to use the rig.
 - **Optional at-rest encryption:** the drive can be built inside a LUKS2 container.
   Trade-off: no unattended restart, and no macOS support.
-- **Chat and coding work; image and video generation currently do not.** The upstream
-  ComfyUI image this project used was abandoned and crash-loops. Images are now pinned to
-  the maintained line, but that fix has not yet been verified on real hardware.
+- **Chat, coding and image generation work.** The upstream ComfyUI image this project
+  used had been abandoned and crash-looped on `comfy_aimdo`; images are now pinned to the
+  maintained line and ComfyUI has been verified running on real hardware.
+- **Video generation is wired up but not yet proven.** A "Generate Video (LTX)" Action is
+  installed automatically and verified bound to the models; its weights are downloaded at
+  install time from URLs you can override. The generation pipeline itself has not been
+  run end-to-end.
 - **Portability itself is still unverified.** The install/connect/disconnect cycle has
   been proven on a single machine; moving the drive to a different one - the entire point
   of the project - has not been tested yet.

@@ -1016,6 +1016,91 @@ docker cp "$SCRIPT_DIR/setup_register_models.py" openwebui:/app/backend/setup_re
 docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MODEL" -e CODER_MODEL="$CODER_MODEL" \
   openwebui python3 setup_register_models.py
 
+# ---------------------------------------------------------------------------
+# Video generation (LTX) - weights, then the Open WebUI Action
+# ---------------------------------------------------------------------------
+# Every URL below is a *default you can override*, not a hardcoded constant.
+# Pinning a download URL into an installer is the same class of fragility as
+# pinning a mutable image tag: it works right up until the host reorganises,
+# and then every new install breaks with no way out except editing the script.
+# Offering the default and accepting an override means a rotted URL costs the
+# user one paste instead of blocking them entirely.
+#
+# Weights live on the drive, so they follow it between machines and are only
+# ever downloaded once.
+COMFY_MODELS="$MOUNT_POINT/stack/comfyui-root/ComfyUI/models"
+LTX_CKPT_NAME="ltxv-2b-0.9.8-distilled-fp8.safetensors"
+LTX_CLIP_NAME="t5xxl_fp8_e4m3fn.safetensors"
+LTX_CKPT_URL_DEFAULT="https://huggingface.co/Lightricks/LTX-Video/resolve/main/${LTX_CKPT_NAME}"
+LTX_CLIP_URL_DEFAULT="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/${LTX_CLIP_NAME}"
+
+# Downloads to a .part file and only moves it into place on success, so an
+# interrupted or failed download can never leave a truncated file that looks
+# installed and then fails cryptically at generation time.
+fetch_weight() {
+  local dest_dir="$1" filename="$2" default_url="$3" label="$4"
+  local dest="$dest_dir/$filename"
+
+  if [ -s "$dest" ]; then
+    echo "  $label already present ($(du -h "$dest" 2>/dev/null | cut -f1)) - skipping."
+    return 0
+  fi
+
+  mkdir -p "$dest_dir"
+  local url="$default_url"
+  local attempt
+  for attempt in 1 2 3; do
+    echo ""
+    echo "  $label"
+    echo "  Default: $url"
+    read -r -p "  URL (Enter to accept, or paste another; 'skip' to skip video): " REPLY_URL
+    case "$REPLY_URL" in
+      skip|SKIP) echo "  Skipped - video generation will not work until this file is added."; return 1 ;;
+      "") : ;;
+      *) url="$REPLY_URL" ;;
+    esac
+
+    echo "  Downloading..."
+    if curl -fL --retry 3 --retry-delay 2 -o "$dest.part" "$url"; then
+      if [ -s "$dest.part" ]; then
+        mv "$dest.part" "$dest"
+        echo "  Saved to $dest ($(du -h "$dest" 2>/dev/null | cut -f1))"
+        return 0
+      fi
+      echo "  Download produced an empty file." >&2
+    fi
+    rm -f "$dest.part"
+    echo "  Download failed (attempt $attempt of 3)." >&2
+    echo "  If the URL has moved, find the current one and paste it below." >&2
+  done
+  echo "  Giving up on $label - video generation will not work until it is added." >&2
+  return 1
+}
+
+echo ""
+echo "== Video generation (LTX) =="
+echo "Two model files are needed. They are stored on the drive, so this is a"
+echo "one-time download that travels with it."
+VIDEO_READY=1
+fetch_weight "$COMFY_MODELS/checkpoints" "$LTX_CKPT_NAME" "$LTX_CKPT_URL_DEFAULT" "LTX-Video checkpoint (~4GB)" || VIDEO_READY=0
+fetch_weight "$COMFY_MODELS/clip" "$LTX_CLIP_NAME" "$LTX_CLIP_URL_DEFAULT" "T5-XXL text encoder (~5GB)" || VIDEO_READY=0
+
+echo ""
+echo "== Installing the 'Generate Video (LTX)' action in Open WebUI =="
+docker cp "$SCRIPT_DIR/video_gen_action.py" openwebui:/app/backend/video_gen_action.py
+docker cp "$SCRIPT_DIR/setup_video_action.py" openwebui:/app/backend/setup_video_action.py
+docker exec -w /app/backend -e ACTION_SOURCE=/app/backend/video_gen_action.py \
+  openwebui python3 setup_video_action.py \
+  || echo "warning: the video action could not be installed - see the message above." >&2
+
+if [ "$VIDEO_READY" -eq 0 ]; then
+  echo ""
+  echo "NOTE: the video action is installed but its model files are missing, so the"
+  echo "      button will fail until you put them in:"
+  echo "        $COMFY_MODELS/checkpoints/$LTX_CKPT_NAME"
+  echo "        $COMFY_MODELS/clip/$LTX_CLIP_NAME"
+fi
+
 echo ""
 echo "Done. Open WebUI: http://localhost:8080"
 echo "GPU tier: $TIER (chat: $CHAT_MODEL, coder: $CODER_MODEL)"

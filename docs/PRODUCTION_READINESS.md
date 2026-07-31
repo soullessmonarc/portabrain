@@ -41,7 +41,16 @@ and re-verified.
   container label *while locked*, unlock, wrong-passphrase rejection, mkfs/mount inside,
   re-unlock with data intact, and confirmation that `luksClose` refuses while mounted.
 - Static analysis: `shellcheck --severity=warning` clean across all shell scripts; CI
-  workflow added.
+  workflow added (and green, after its own first run found three real defects).
+- Mount-namespace fix: verified on hardware. `connect.ps1` now re-execs into systemd's
+  namespace, the data-root guard passes, and the stack comes up from the drive's existing
+  images with **no re-pull** - which is the observable proof that dockerd is looking at
+  the drive and not at WSL2's internal disk.
+- ComfyUI: verified running on the pinned `cu126-slim` image, serving HTTP 200, with a
+  clean startup log. Image generation is no longer blocked.
+- Video-generation Action: verified installing, activating, surviving a re-run
+  idempotently, and binding to both registered models via `actionIds`. Its weights are
+  fetched from overridable URLs, both of which were confirmed live.
 - Optional SMB share: credential prompts, `chmod 600` credentials file, local-first
   sync timer, and the reconnect heartbeat (including its 10-failure alert firing
   exactly once per outage) - all verified live, including a simulated 10-failed-attempt
@@ -59,12 +68,15 @@ and re-verified.
   reconnect, same host. Moving the drive to a genuinely different machine - which is the
   entire point - has not been tested. That means the GPU re-tiering, the old-tier model
   cleanup, and the from-scratch `wsl --install` path are all still theory.
-- **ComfyUI is currently broken upstream.** `yanwk/comfyui-boot:cu124-slim` was
-  abandoned (last rebuilt 2025-10-13, variant since deleted from the upstream repo) and
-  crash-loops on `ModuleNotFoundError: No module named 'comfy_aimdo'`. Images are now
-  pinned to the maintained `cu126-slim` line, but **that fix has not been tested** - it
-  needs a run on a drive whose ComfyUI copy predates the change. Until then, treat image
-  and video generation as unproven; chat and coding work.
+- **Video generation has not been run end-to-end.** The Action, its activation, and its
+  binding to the models are all verified; the LTX pipeline itself has not produced a clip.
+  A drive whose weights downloaded successfully should work, but that is an inference, not
+  an observation.
+- **LUKS encryption has never run on a real drive.** The primitives were validated against
+  a loopback device - format, discovery while locked, unlock, wrong-passphrase rejection,
+  mkfs/mount, re-unlock with data intact, and `luksClose` correctly refusing while
+  mounted - but `install.sh`'s orchestration around them is unexecuted code. Testing it
+  requires reformatting a drive.
 - **No integration test, and there cannot usefully be one.** CI does static analysis
   only (shellcheck, PSScriptAnalyzer, python syntax). Attaching a physical disk to WSL2
   and reformatting it is not reproducible on a hosted runner, and a green tick that

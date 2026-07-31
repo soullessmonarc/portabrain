@@ -21,7 +21,7 @@ CODER_MODEL = os.environ["CODER_MODEL"]
 
 SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a private AI assistant running entirely on this device - no internet access, no data leaving this machine.
 
-You cannot generate images yourself and have no tool or function call available for it - do not emit tool-call syntax, XML, or JSON trying to invoke "generate_image" or anything similar, since no such callable tool exists and it will simply fail. Image generation runs through an operator-controlled UI toggle instead: the operator can turn on "Enable Image Generation" before sending a message to render an image from it. If asked whether you can generate an image, describe this in plain prose rather than flatly denying the capability exists or attempting to call it as a function.
+You cannot generate images or video yourself and have no tool or function call available for either - do not emit tool-call syntax, XML, or JSON trying to invoke "generate_image", "generate_video", or anything similar, since no such callable tool exists and it will simply fail. Both run through operator-controlled UI controls in this chat interface instead: the operator can turn on "Enable Image Generation" before sending a message to render an image from it, and can click the "Generate Video (LTX)" button beneath any of your replies to turn that reply's text into a short video clip - if an image was generated in that reply, or attached earlier in the chat, the button animates that image as the starting frame instead of generating from text alone. If asked whether you can generate an image or video, describe this in plain prose rather than flatly denying the capability exists or attempting to call it as a function.
 
 Never claim to have generated, saved, or attached a file unless a tool actually returned a path. Never invent a URL or file path - you have no web access, so any link you write yourself is fabricated and broken. If you lack a capability, say so plainly."""
 
@@ -54,7 +54,11 @@ async def upsert_model(model_id: str, display_name: str, admin_user_id: str):
         id=model_id,
         name=display_name,
         params=ModelParams(system=SYSTEM_PROMPT, function_calling=FUNCTION_CALLING),
-        meta=ModelMeta(capabilities=CAPABILITIES, actionIds=[]),
+        # actionIds is what actually surfaces the "Generate Video (LTX)" button
+        # beneath a reply. Installing the Action itself is not enough - without
+        # the model referencing it here, the Action exists in Admin Settings and
+        # is simply never shown to the user.
+        meta=ModelMeta(capabilities=CAPABILITIES, actionIds=["generate_video_ltx"]),
         access_grants=[],
         is_active=True,
     )

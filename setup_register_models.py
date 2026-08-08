@@ -14,6 +14,7 @@ with open("/app/backend/.webui_secret_key") as f:
 
 from open_webui.models.models import Models, ModelForm, ModelMeta, ModelParams
 from open_webui.models.users import Users
+from open_webui.models.config import Config
 
 AGENT_NAME = os.environ.get("AGENT_NAME", "Assistant")
 CHAT_MODEL = os.environ["CHAT_MODEL"]
@@ -78,6 +79,17 @@ async def main():
         return
     await upsert_model(CHAT_MODEL, AGENT_NAME, admin.id)
     await upsert_model(CODER_MODEL, f"{AGENT_NAME} (Coder)", admin.id)
+
+    # Registering the model does not make it the DEFAULT for a new chat -
+    # that is a separate setting (config key "ui.default_models") nothing here
+    # ever touched. Confirmed live on the non-template copy of this rig: it
+    # sat at None indefinitely, so every new chat needed the model picked by
+    # hand despite it being correctly named and registered. Verified against
+    # the actual router source (open_webui/routers/configs.py) rather than
+    # guessed - DEFAULT_MODELS maps to "ui.default_models" and is a single
+    # model id string, not a list.
+    await Config.upsert({"ui.default_models": CHAT_MODEL})
+    print(f"default model for new chats: {CHAT_MODEL}")
 
 
 asyncio.run(main())

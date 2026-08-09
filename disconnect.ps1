@@ -226,6 +226,24 @@ try {
             Write-Error "wsl --unmount failed. Do not unplug the drive yet."
             exit 1
         }
+        # connect.ps1 and install-windows.ps1 both take the disk Offline in
+        # Windows before handing it to WSL2, and nothing here ever put it back.
+        # `wsl --unmount` releases the disk from WSL but does NOT clear the
+        # offline flag, so the drive stayed Offline in Disk Management forever
+        # after the first disconnect: invisible in Explorer, and confusing on any
+        # other machine, which sees a healthy partition it refuses to mount.
+        # Reversing our own change is this script's job, since it is the one
+        # undoing what connect.ps1 did.
+        $disk = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+        if ($disk -and $disk.IsOffline) {
+            Write-Host "== Bringing disk $DiskNumber back online in Windows =="
+            Set-Disk -Number $DiskNumber -IsOffline $false -ErrorAction SilentlyContinue
+            if ($?) {
+                Write-Host "Online."
+            } else {
+                Write-Warning "Could not bring disk $DiskNumber back online automatically. It is safe to unplug; if you keep it attached, set it Online in Disk Management (or: Set-Disk -Number $DiskNumber -IsOffline `$false)."
+            }
+        }
     }
 
     Write-Host "== Stopping the WSL keep-alive =="

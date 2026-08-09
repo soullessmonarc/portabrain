@@ -31,8 +31,8 @@ COMFYUI_BASE_URL = os.environ.get("COMFYUI_BASE_URL", "http://comfyui:8188")
 WORKFLOW = {
     "3": {
         "inputs": {
-            "seed": 0, "steps": 20, "cfg": 8, "sampler_name": "euler",
-            "scheduler": "normal", "denoise": 1,
+            "seed": 0, "steps": 20, "cfg": 8, "sampler_name": "dpmpp_2m",
+            "scheduler": "karras", "denoise": 1,
             "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0],
             "latent_image": ["5", 0],
         },
@@ -45,7 +45,7 @@ WORKFLOW = {
         "_meta": {"title": "Load Checkpoint"},
     },
     "5": {
-        "inputs": {"width": 512, "height": 512, "batch_size": 1},
+        "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
         "class_type": "EmptyLatentImage",
         "_meta": {"title": "Empty Latent Image"},
     },

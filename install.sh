@@ -703,6 +703,14 @@ with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
 PYEOF
 
+# A previous disconnect masks these units (--runtime) so nothing can respawn
+# dockerd via socket activation while the drive is being unmounted. Normally the
+# disconnect lifts the mask itself once the unmount succeeds, but an interrupted
+# or failed disconnect can leave it in place - and then this start fails with a
+# bare "Unit docker.service is masked", which points nowhere near the cause.
+# Unmasking unconditionally here is harmless when nothing is masked.
+systemctl unmask --runtime docker.socket containerd.socket docker.service containerd.service >/dev/null 2>&1 || true
+
 echo "== Starting Docker =="
 systemctl start containerd
 sleep 1
@@ -1024,16 +1032,18 @@ done
 echo "$TIER" > "$STACK_DIR/.gpu_tier"
 
 echo ""
-# Defaults to the name already stored on the drive, not to "Assistant". This
-# script runs again on every machine the drive is plugged into, so a hardcoded
-# default meant that pressing Enter on a second machine silently *renamed* an
-# assistant that already had a name - the drive is meant to carry its own
-# identity between machines, not be re-christened by whoever plugs it in.
+# Defaults to the name already stored on the drive, falling back to PortaBrain
+# only for a drive that has never been named. This script runs again on every
+# machine the drive is plugged into, so a hardcoded default meant that pressing
+# Enter on a second machine silently *renamed* an assistant that already had a
+# name - the drive is meant to carry its own identity between machines, not be
+# re-christened by whoever plugs it in. That ordering is the important part: the
+# stored name always wins over the fallback below.
 STORED_AGENT_NAME=""
 if [ -f "$STACK_DIR/.agent_name" ]; then
   STORED_AGENT_NAME="$(cat "$STACK_DIR/.agent_name" 2>/dev/null || true)"
 fi
-DEFAULT_AGENT_NAME="${STORED_AGENT_NAME:-Assistant}"
+DEFAULT_AGENT_NAME="${STORED_AGENT_NAME:-PortaBrain}"
 read -r -p "What would you like to name your AI assistant? [$DEFAULT_AGENT_NAME]: " AGENT_NAME
 AGENT_NAME="${AGENT_NAME:-$DEFAULT_AGENT_NAME}"
 printf '%s\n' "$AGENT_NAME" > "$STACK_DIR/.agent_name"

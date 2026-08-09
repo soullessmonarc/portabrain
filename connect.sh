@@ -365,6 +365,14 @@ echo "Data-root verified on the drive ($MP_DEV)."
 # this exact reason - if they come up first, containerd creates its own mount
 # at the data-root path on WSL2's internal disk and Docker's storage silently
 # ends up somewhere other than the drive.
+# A previous disconnect masks these units (--runtime) so nothing can respawn
+# dockerd via socket activation while the drive is being unmounted. Normally the
+# disconnect lifts the mask itself once the unmount succeeds, but an interrupted
+# or failed disconnect can leave it in place - and then this start fails with a
+# bare "Unit docker.service is masked", which points nowhere near the cause.
+# Unmasking unconditionally here is harmless when nothing is masked.
+systemctl unmask --runtime docker.socket containerd.socket docker.service containerd.service >/dev/null 2>&1 || true
+
 echo "== Starting containerd and Docker (drive is mounted first, deliberately) =="
 STARTED_DAEMONS=1
 systemctl start containerd

@@ -16,7 +16,7 @@ from open_webui.models.models import Models, ModelForm, ModelMeta, ModelParams
 from open_webui.models.users import Users
 from open_webui.models.config import Config
 
-AGENT_NAME = os.environ.get("AGENT_NAME", "Assistant")
+AGENT_NAME = os.environ.get("AGENT_NAME", "PortaBrain")
 CHAT_MODEL = os.environ["CHAT_MODEL"]
 CODER_MODEL = os.environ["CODER_MODEL"]
 
@@ -96,6 +96,6 @@ asyncio.run(main())
 
 # Expected environment variables when run standalone (already set for you
 # when install.sh calls this automatically):
-#   AGENT_NAME  - display name you chose during install (defaults to "Assistant")
+#   AGENT_NAME  - display name you chose during install (defaults to "PortaBrain")
 #   CHAT_MODEL  - the Ollama model tag used for chat, e.g. qwen2.5:7b-instruct-q4_K_M
 #   CODER_MODEL - the Ollama model tag used for coding, e.g. qwen2.5-coder:7b-instruct-q4_K_M

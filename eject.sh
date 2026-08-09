@@ -154,6 +154,25 @@ fi
 # docker.service alone isn't enough: docker.socket stays active and respawns
 # dockerd via socket activation the instant anything touches the socket, so the
 # socket units go down too, before/with the services.
+# Masked before stopping, not merely stopped. Stopping the socket units closes
+# the usual respawn path but not the RACE: anything connecting in the moment
+# before the socket unit goes down still triggers activation, and docker.service
+# comes straight back up holding the drive's data-root. A runtime mask makes
+# activation impossible instead of unlikely - systemd will not start a masked
+# unit for any reason, socket activation included.
+#
+# This is what makes stopping Docker Desktop unnecessary: its probing of WSL2
+# distros was only ever dangerous because it could trigger that activation.
+#
+# NOT unmasked here: the unmount happens after this script exits, from the
+# Windows side, so lifting the mask now would reopen the race it closes. It is
+# lifted by the Windows helper once the unmount succeeds, and defensively by
+# install.sh/connect.sh on the next connect. --runtime also means a WSL shutdown
+# clears it, so it cannot become permanently stuck.
+echo "== Blocking Docker socket activation for the duration of the unmount =="
+systemctl mask --runtime docker.socket containerd.socket docker.service containerd.service >/dev/null 2>&1 || \
+  echo "warning: could not mask Docker's units - falling back to stopping them only." >&2
+
 echo "== Stopping Docker/containerd (their data-root lives on the drive) =="
 systemctl stop docker.socket containerd.socket docker.service containerd.service 2>/dev/null || \
   systemctl stop docker.service containerd.service 2>/dev/null || true

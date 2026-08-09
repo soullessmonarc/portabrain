@@ -83,6 +83,66 @@ function Get-DockerDesktopCli {
     return $null
 }
 
+# Decides whether Docker Desktop has WSL integration enabled for a given distro.
+#
+# This matters because stopping Docker Desktop at all is only necessary when it
+# can reach into the rig's distro. The long-standing comment in these scripts
+# claimed "Docker Desktop's WSL integration is what actually backs
+# /var/run/docker.sock here" - that turned out to be wrong. Checked on this
+# machine: /usr/bin/docker inside the distro is a real 45MB apt-installed binary
+# (not a symlink into Docker Desktop's cli-tools), dockerd and the docker.service
+# and docker.socket units are the distro's own, and daemon.json points data-root
+# at the drive. The rig runs entirely on its own native Docker Engine.
+#
+# Docker Desktop was still worth stopping for a different reason: it probes WSL2
+# distros, and a probe could trip systemd socket activation and respawn dockerd
+# mid-unmount. eject.sh now runtime-masks those units instead, which makes
+# activation impossible rather than merely unlikely - so when Docker Desktop
+# isn't integrated with this distro there is nothing left for it to break, and
+# stopping it (plus the consent prompt, and ~77s of restart) is pure friction.
+#
+# Absent settings mean defaults: Docker Desktop integrates with WSL's DEFAULT
+# distro only. On this machine the default is "docker-desktop", its own internal
+# distro - not the rig's - so nothing needed disabling here in the first place.
+function Test-DockerDesktopIntegratesDistro {
+    param([string]$DistroName)
+
+    $settingsPath = Join-Path $env:APPDATA "Docker\settings-store.json"
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        # No settings file at all: can't prove it's uninvolved, so assume it is.
+        return $true
+    }
+    try {
+        $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    } catch {
+        return $true
+    }
+
+    $explicit = $settings.PSObject.Properties['IntegratedWslDistros']
+    if ($explicit -and $explicit.Value) {
+        foreach ($d in @($explicit.Value)) {
+            if ("$d".Trim() -eq $DistroName) { return $true }
+        }
+    }
+
+    $useDefault = $settings.PSObject.Properties['EnableIntegrationWithDefaultWslDistro']
+    $defaultIntegrationOn = if ($useDefault) { [bool]$useDefault.Value } else { $true }
+    if ($defaultIntegrationOn) {
+        # WSL marks its default distro with a leading '*' in `wsl -l -v`.
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $verbose = ((wsl -l -v) -replace "`0", "")
+        $ErrorActionPreference = $prev
+        foreach ($line in ($verbose -split "`n")) {
+            if ($line -match '^\s*\*\s+(\S+)') {
+                if ($Matches[1] -eq $DistroName) { return $true }
+                break
+            }
+        }
+    }
+    return $false
+}
+
 
 function Stop-DockerDesktop {
     $procs = Get-Process -Name $dockerDesktopProcNames -ErrorAction SilentlyContinue
@@ -90,6 +150,18 @@ function Stop-DockerDesktop {
         Write-Host "Docker Desktop isn't running -- nothing to stop."
         return
     }
+    # Left alone entirely when it has no WSL integration with this distro. The
+    # rig's own Docker Engine serves the stack, and eject.sh masks the socket
+    # units so nothing can respawn dockerd during the unmount - so there is no
+    # longer any reason to interrupt someone's Docker Desktop, prompt them about
+    # it, or wait for it to come back.
+    if (-not (Test-DockerDesktopIntegratesDistro -DistroName $Distro)) {
+        Write-Host "Docker Desktop is running, but has no WSL integration with '$Distro' -"
+        Write-Host "leaving it alone. (The rig uses its own Docker Engine inside the distro,"
+        Write-Host "and socket activation is blocked during the unmount.)"
+        return
+    }
+
 
     $mainProc = $procs | Where-Object { $_.Name -eq "Docker Desktop" -and $_.Path } | Select-Object -First 1
     $script:dockerDesktopExePath = if ($mainProc) { $mainProc.Path } else { "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe" }
@@ -254,6 +326,12 @@ try {
         '  fi'
         '  echo "Locked."'
         'fi'
+        '# The unmount is done, so socket activation is safe again. eject.sh masked'
+        '# these deliberately and did NOT unmask on exit, because the unmount happens'
+        '# here - after it had already finished. This is the point where the risk ends.'
+        '# The connect path also unmasks defensively, so an interrupted disconnect'
+        '# cannot leave Docker permanently masked.'
+        'systemctl unmask --runtime docker.socket containerd.socket docker.service containerd.service >/dev/null 2>&1 || true'
     )
     $helperContent = ($helperLines -join "`n") + "`n"
     [System.IO.File]::WriteAllText($helperWin, $helperContent, (New-Object System.Text.UTF8Encoding $false))

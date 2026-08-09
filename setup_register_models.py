@@ -20,11 +20,24 @@ AGENT_NAME = os.environ.get("AGENT_NAME", "PortaBrain")
 CHAT_MODEL = os.environ["CHAT_MODEL"]
 CODER_MODEL = os.environ["CODER_MODEL"]
 
-SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a private AI assistant running entirely on this device - no internet access, no data leaving this machine.
+DEFAULT_SYSTEM_PROMPT = """You are {AGENT_NAME}, a private AI assistant running entirely on this device - no internet access, no data leaving this machine.
 
 You cannot generate images or video yourself and have no tool or function call available for either - do not emit tool-call syntax, XML, or JSON trying to invoke "generate_image", "generate_video", or anything similar, since no such callable tool exists and it will simply fail. Both run through operator-controlled UI controls in this chat interface instead: the operator can turn on "Enable Image Generation" before sending a message to render an image from it, and can click the "Generate Video (LTX)" button beneath any of your replies to turn that reply's text into a short video clip - if an image was generated in that reply, or attached earlier in the chat, the button animates that image as the starting frame instead of generating from text alone. If asked whether you can generate an image or video, describe this in plain prose rather than flatly denying the capability exists or attempting to call it as a function.
 
 Never claim to have generated, saved, or attached a file unless a tool actually returned a path. Never invent a URL or file path - you have no web access, so any link you write yourself is fabricated and broken. If you lack a capability, say so plainly."""
+
+# A rig can supply its own prompt instead of editing this file. install.sh reads
+# system_prompt.txt (next to it, or on the drive) and passes it in here, so a
+# personalised rig stays a data file on that drive rather than a forked copy of
+# this script that then misses every later fix made here.
+#
+# Substituted with .replace rather than .format so a custom prompt can contain
+# braces (JSON examples, code) without needing them escaped - a trap that would
+# otherwise only show up as a crash for whoever wrote the prompt.
+_custom = os.environ.get("AGENT_SYSTEM_PROMPT", "").strip()
+SYSTEM_PROMPT = (_custom or DEFAULT_SYSTEM_PROMPT).replace("{AGENT_NAME}", AGENT_NAME)
+if _custom:
+    print(f"using a custom system prompt ({len(_custom)} chars)")
 
 CAPABILITIES = {
     "file_context": True,

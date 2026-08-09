@@ -15,6 +15,14 @@ __pycache__/
 # Local state written by connect.ps1 next to itself
 .keepalive.pid
 
+# An optional per-rig system prompt. install.sh picks this up if present and
+# copies it onto the drive, so a rig can carry its own personality without
+# forking setup_register_models.py. Deliberately NOT shipped or committed: it is
+# the one file here that is inherently personal - it describes a specific
+# operator's project and the tone they want - and the template's own default
+# prompt is meant to stay neutral.
+system_prompt.txt
+
 # This repo only ships the installer scripts themselves - the stack files
 # they generate (docker-compose.yml, credentials files, systemd units) are
 # written onto the target machine's own drive at install time, never here.

@@ -1048,9 +1048,29 @@ read -r -p "What would you like to name your AI assistant? [$DEFAULT_AGENT_NAME]
 AGENT_NAME="${AGENT_NAME:-$DEFAULT_AGENT_NAME}"
 printf '%s\n' "$AGENT_NAME" > "$STACK_DIR/.agent_name"
 
+# An optional system_prompt.txt lets a rig carry its own personality without
+# forking setup_register_models.py - a fork would drift and quietly miss every
+# later fix made there. Checked on the drive first so the prompt travels with it
+# between machines, then next to these scripts.
+#
+# Use {AGENT_NAME} in the file wherever the assistant's name should appear.
+AGENT_SYSTEM_PROMPT=""
+for _promptfile in "$STACK_DIR/system_prompt.txt" "$SCRIPT_DIR/system_prompt.txt"; do
+  if [ -s "$_promptfile" ]; then
+    AGENT_SYSTEM_PROMPT="$(cat "$_promptfile")"
+    echo "Using the custom system prompt from $_promptfile"
+    # Copy onto the drive so it follows the rig to the next machine.
+    if [ "$_promptfile" != "$STACK_DIR/system_prompt.txt" ]; then
+      cp "$_promptfile" "$STACK_DIR/system_prompt.txt"
+    fi
+    break
+  fi
+done
+
 echo "== Registering models in Open WebUI as '$AGENT_NAME' (system prompt + image-generation support) =="
 docker cp "$SCRIPT_DIR/setup_register_models.py" openwebui:/app/backend/setup_register_models.py
 docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MODEL" -e CODER_MODEL="$CODER_MODEL" \
+  -e AGENT_SYSTEM_PROMPT="$AGENT_SYSTEM_PROMPT" \
   openwebui python3 setup_register_models.py
 
 # ---------------------------------------------------------------------------

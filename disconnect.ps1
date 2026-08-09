@@ -65,6 +65,25 @@ $dockerDesktopProcNames = "Docker Desktop", "com.docker.backend", "com.docker.bu
 $dockerDesktopWasRunning = $false
 $dockerDesktopExePath = $null
 
+# Locates Docker Desktop's bundled docker.exe, which carries the `docker desktop`
+# CLI plugin (stop/start/status). Not assumed to be on PATH: Docker Desktop puts
+# it in its own resources\bin, and PATH depends on how this script was launched.
+function Get-DockerDesktopCli {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")
+    )
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} "Docker\Docker\resources\bin\docker.exe")
+    }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    $cmd = Get-Command docker.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+
 function Stop-DockerDesktop {
     $procs = Get-Process -Name $dockerDesktopProcNames -ErrorAction SilentlyContinue
     if (-not $procs) {
@@ -88,13 +107,57 @@ function Stop-DockerDesktop {
 
     $script:dockerDesktopWasRunning = $true
     Write-Host "== Stopping Docker Desktop (it respawns dockerd inside WSL2 via socket activation, which blocks the unmount) =="
-    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
+    # Stopped through Docker Desktop's OWN CLI, not Stop-Process -Force. Killing
+    # com.docker.backend outright is an unclean shutdown and Docker Desktop
+    # notices: the next launch greets you with "Docker Desktop - an unexpected
+    # error occurred / Quit / Reset to factory defaults". That dialog was not a
+    # Docker bug, it was this script's doing. `docker desktop stop` shuts the
+    # backend down properly - measured at ~12s to fully exit, with the following
+    # start returning to a normal window and a reachable engine.
+    #
+    # The force-kill stays only as a fallback: releasing the disk while a live
+    # dockerd still holds the SSD's data-root risks filesystem damage, which is
+    # far worse than a crash dialog.
+    $stoppedCleanly = $false
+    $dockerCli = Get-DockerDesktopCli
+    if ($dockerCli) {
+        & $dockerCli desktop stop 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Get-Process -Name "com.docker.backend" -ErrorAction SilentlyContinue)) {
+                $stoppedCleanly = $true
+                break
+            }
+            Start-Sleep -Seconds 2
+        }
+    } else {
+        Write-Host "  (Docker Desktop's CLI wasn't found, so falling back to stopping its processes directly.)"
+    }
+
+    if (-not $stoppedCleanly) {
+        Write-Warning "Graceful 'docker desktop stop' didn't finish - stopping Docker Desktop's processes directly instead. It may show a recovery prompt the next time it starts."
+        Get-Process -Name $dockerDesktopProcNames -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+    } else {
+        Write-Host "Docker Desktop stopped cleanly."
+    }
 }
 
 function Start-DockerDesktopIfNeeded {
     if (-not $dockerDesktopWasRunning) { return }
     Write-Host "== Relaunching Docker Desktop =="
+    # Symmetry with the graceful stop: `docker desktop start` returns once the
+    # engine is actually up (~77s measured), not just when the GUI is spawned.
+    $dockerCli = Get-DockerDesktopCli
+    if ($dockerCli) {
+        & $dockerCli desktop start 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Docker Desktop is back up."
+            return
+        }
+        Write-Warning "'docker desktop start' reported a problem - falling back to launching the app directly."
+    }
     if (-not ($dockerDesktopExePath -and (Test-Path $dockerDesktopExePath))) {
         Write-Warning "Docker Desktop was running before but its executable path couldn't be confirmed ($dockerDesktopExePath) -- please relaunch it manually."
         return

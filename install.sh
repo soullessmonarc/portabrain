@@ -245,7 +245,26 @@ PART_LABEL="$(blkid -o value -s LABEL "$PARTITION" 2>/dev/null || true)"
 if [ "$PART_TYPE" = "crypto_LUKS" ]; then
   echo "$PARTITION is an encrypted (LUKS) rig drive - unlocking it."
   IS_ENCRYPTED=1
+  # See connect.sh for the full reasoning. Short version: an existing mapping
+  # can be a broken leftover that still reports State: ACTIVE and still names an
+  # existing device path, so it must be checked both for pointing at THIS
+  # partition and for actually being readable (iflag=direct, since a cached read
+  # succeeds against a broken mapping).
+  MAPPING_IS_LIVE=0
   if [ -e "/dev/mapper/$MAPPER_NAME" ]; then
+    MAPPED_BACKING="$(cryptsetup status "$MAPPER_NAME" 2>/dev/null | awk '/^[[:space:]]*device:/ {print $2}')"
+    if [ -n "$MAPPED_BACKING" ] && [ "$MAPPED_BACKING" = "$PARTITION" ] \
+      && dd if="/dev/mapper/$MAPPER_NAME" of=/dev/null bs=4096 count=1 iflag=direct >/dev/null 2>&1; then
+      MAPPING_IS_LIVE=1
+    else
+      echo "Found a stale '$MAPPER_NAME' mapping (backed by '${MAPPED_BACKING:-nothing}',"
+      echo "but this drive is at $PARTITION) - clearing it before unlocking."
+      cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null \
+        || dmsetup remove -f "$MAPPER_NAME" 2>/dev/null \
+        || { echo "ERROR: could not clear the stale mapping '$MAPPER_NAME'." >&2; exit 1; }
+    fi
+  fi
+  if [ "$MAPPING_IS_LIVE" -eq 1 ]; then
     echo "Already unlocked."
   else
     UNLOCKED=0
@@ -933,16 +952,24 @@ else
   fi
 fi
 
+# Image size stays at SDXL's native 1024x1024 on BOTH tiers. Dropping the
+# small tier to 512 looks like the safe choice and is actually the wrong one:
+# SDXL is trained at 1024, and rendering below that costs real quality
+# (mangled anatomy, incoherent composition) rather than just detail. It also
+# turned out not to buy anything - measured on an 8GB RTX card with a 7B chat
+# model also resident, 1024x1024 SDXL completed in 25 seconds and never came
+# close to exhausting VRAM, because ComfyUI unloads the LLM's neighbours as
+# needed. Only the step count is reduced on the small tier, which trades a
+# little refinement for speed without breaking the composition.
+IMAGE_SIZE="1024x1024"
 if [ "$MAX_VRAM_MB" -ge 10000 ]; then
-  IMAGE_SIZE="1024x1024"
   IMAGE_STEPS=40
   VIDEO_WIDTH=768
   VIDEO_HEIGHT=480
   VIDEO_LENGTH=49
   VIDEO_STEPS=10
 else
-  IMAGE_SIZE="512x512"
-  IMAGE_STEPS=20
+  IMAGE_STEPS=25
   VIDEO_WIDTH=512
   VIDEO_HEIGHT=320
   VIDEO_LENGTH=33
@@ -1017,7 +1044,9 @@ docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MOD
   openwebui python3 setup_register_models.py
 
 # ---------------------------------------------------------------------------
-# Video generation (LTX) - weights, then the Open WebUI Action
+# Model weights (image + video) - fetched automatically, then wired into
+# Open WebUI so "Enable Image Generation" and "Generate Video (LTX)" work
+# without a manual trip to Admin Settings.
 # ---------------------------------------------------------------------------
 # Every URL below is a *default you can override*, not a hardcoded constant.
 # Pinning a download URL into an installer is the same class of fragility as
@@ -1026,6 +1055,10 @@ docker exec -w /app/backend -e AGENT_NAME="$AGENT_NAME" -e CHAT_MODEL="$CHAT_MOD
 # Offering the default and accepting an override means a rotted URL costs the
 # user one paste instead of blocking them entirely.
 #
+# This matters more for the two CivitAI checkpoints below than for the
+# HuggingFace-hosted LTX weights: CivitAI reassigns version/file IDs far more
+# often than HuggingFace moves files.
+#
 # Weights live on the drive, so they follow it between machines and are only
 # ever downloaded once.
 COMFY_MODELS="$MOUNT_POINT/stack/comfyui-root/ComfyUI/models"
@@ -1033,12 +1066,59 @@ LTX_CKPT_NAME="ltxv-2b-0.9.8-distilled-fp8.safetensors"
 LTX_CLIP_NAME="t5xxl_fp8_e4m3fn.safetensors"
 LTX_CKPT_URL_DEFAULT="https://huggingface.co/Lightricks/LTX-Video/resolve/main/${LTX_CKPT_NAME}"
 LTX_CLIP_URL_DEFAULT="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/${LTX_CLIP_NAME}"
+PONY_CKPT_NAME="ponyDiffusionV6XL.safetensors"
+JUGGERNAUT_CKPT_NAME="juggernautXL_v9.safetensors"
+# Resolved and verified live (HTTP 206, correct filename) via civitai.com's
+# direct download API - civitai.com/models/257749 and civitai.com/models/133005.
+PONY_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/290640?fileId=228616"
+JUGGERNAUT_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/348913?fileId=277777"
+
+# Re-locates a SPECIFIC named CivitAI checkpoint version if its URL has moved
+# (CivitAI can reassign version/file IDs), by querying the model's own public
+# version list and matching on the exact version name. Deliberately does NOT
+# fall back to "pick another version" if that exact name is gone - CivitAI's
+# nsfwLevel field describes the rating of a version's PREVIEW IMAGES, not a
+# guarantee the checkpoint itself is still uncensored, and a "cleaned up"
+# replacement could be uploaded under policy pressure with no reliable API
+# signal distinguishing it from the original. That decision is left to a
+# human rather than guessed by this script.
+civitai_resolve_url() {
+  local model_id="$1" version_name="$2"
+  python3 - "$model_id" "$version_name" <<'PYEOF'
+import json, sys, urllib.request
+model_id, version_name = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(
+    f"https://civitai.com/api/v1/models/{model_id}",
+    headers={"User-Agent": "curl/8.0"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.load(resp)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+for v in data.get("modelVersions", []):
+    if v.get("name") == version_name:
+        for f in v.get("files", []):
+            if f.get("type") == "Model":
+                print(f"https://civitai.com/api/download/models/{v['id']}?fileId={f['id']}")
+                sys.exit(0)
+print(f"NOTFOUND: '{version_name}' is not among this model's current versions", file=sys.stderr)
+sys.exit(2)
+PYEOF
+}
 
 # Downloads to a .part file and only moves it into place on success, so an
 # interrupted or failed download can never leave a truncated file that looks
 # installed and then fails cryptically at generation time.
+#
+# civitai_model_id/civitai_version_name are optional (blank for the plain
+# HuggingFace-hosted LTX weights, which don't need this): when set, a failed
+# download against the unmodified default URL triggers exactly one
+# same-version relocation lookup before falling through to the manual prompt.
 fetch_weight() {
   local dest_dir="$1" filename="$2" default_url="$3" label="$4"
+  local civitai_model_id="${5:-}" civitai_version_name="${6:-}"
   local dest="$dest_dir/$filename"
 
   if [ -s "$dest" ]; then
@@ -1048,14 +1128,15 @@ fetch_weight() {
 
   mkdir -p "$dest_dir"
   local url="$default_url"
+  local healed=0
   local attempt
   for attempt in 1 2 3; do
     echo ""
     echo "  $label"
     echo "  Default: $url"
-    read -r -p "  URL (Enter to accept, or paste another; 'skip' to skip video): " REPLY_URL
+    read -r -p "  URL (Enter to accept, or paste another; 'skip' to skip): " REPLY_URL
     case "$REPLY_URL" in
-      skip|SKIP) echo "  Skipped - video generation will not work until this file is added."; return 1 ;;
+      skip|SKIP) echo "  Skipped - this file will not be present until added manually."; return 1 ;;
       "") : ;;
       *) url="$REPLY_URL" ;;
     esac
@@ -1070,12 +1151,72 @@ fetch_weight() {
       echo "  Download produced an empty file." >&2
     fi
     rm -f "$dest.part"
-    echo "  Download failed (attempt $attempt of 3)." >&2
-    echo "  If the URL has moved, find the current one and paste it below." >&2
+    echo "  Download failed." >&2
+
+    if [ -n "$civitai_model_id" ] && [ "$healed" -eq 0 ] && [ "$url" = "$default_url" ]; then
+      healed=1
+      echo "  Checking CivitAI for this exact version under a new URL (not a substitute)..."
+      local resolved
+      if resolved="$(civitai_resolve_url "$civitai_model_id" "$civitai_version_name")"; then
+        echo "  Found: $resolved"
+        url="$resolved"
+        default_url="$resolved"
+      else
+        echo "  '$civitai_version_name' is gone from CivitAI entirely, not just relocated - not" >&2
+        echo "  guessing a substitute version. Find and paste a current URL for this SAME" >&2
+        echo "  checkpoint yourself, if one still exists elsewhere." >&2
+      fi
+    fi
+    echo "  (attempt $attempt of 3)" >&2
   done
-  echo "  Giving up on $label - video generation will not work until it is added." >&2
+  echo "  Giving up on $label - it will not be present until added manually." >&2
   return 1
 }
+
+echo ""
+echo "== Image generation (SDXL) =="
+echo "Two checkpoints are offered. Juggernaut is the general-purpose one and"
+echo "becomes the default; Pony is stylised/character-focused. Either can be"
+echo "skipped with 'skip' - one is enough to start."
+# Juggernaut is fetched first and preferred below because it is the photoreal,
+# general-purpose model. Pony V6 is strongly character/anime-biased and expects
+# its own score_* tag vocabulary: given a plain scene prompt it will happily
+# ignore it and render a character instead. Measured, not assumed - "the moon
+# over a ruined city at night" came back from Pony as anime character art.
+# Pony is still worth having for stylised character work, just not as the
+# default an unfamiliar user gets first.
+fetch_weight "$COMFY_MODELS/checkpoints" "$JUGGERNAUT_CKPT_NAME" "$JUGGERNAUT_CKPT_URL_DEFAULT" \
+  "Juggernaut XL v9 checkpoint, photoreal (~6.6GB)" "133005" "V9 + RunDiffusionPhoto 2" || true
+fetch_weight "$COMFY_MODELS/checkpoints" "$PONY_CKPT_NAME" "$PONY_CKPT_URL_DEFAULT" \
+  "Pony Diffusion V6 XL checkpoint, stylised/character (~6.5GB)" "257749" "V6 (start with this one)" || true
+
+# Readiness is decided by which file is actually on disk afterwards, NOT by
+# either fetch_weight's exit status. Skipping the first checkpoint but taking
+# the second is a perfectly good outcome, and an earlier version of this block
+# tracked the first download's result in a flag that the second could never
+# clear - so choosing "skip" on Pony and downloading Juggernaut left image
+# generation unconfigured despite a usable checkpoint sitting right there.
+IMAGE_CHECKPOINT=""
+if [ -s "$COMFY_MODELS/checkpoints/$JUGGERNAUT_CKPT_NAME" ]; then
+  IMAGE_CHECKPOINT="$JUGGERNAUT_CKPT_NAME"
+elif [ -s "$COMFY_MODELS/checkpoints/$PONY_CKPT_NAME" ]; then
+  IMAGE_CHECKPOINT="$PONY_CKPT_NAME"
+fi
+
+if [ -n "$IMAGE_CHECKPOINT" ]; then
+  echo ""
+  echo "== Wiring Open WebUI's image generation to ComfyUI =="
+  docker cp "$SCRIPT_DIR/setup_image_config.py" openwebui:/app/backend/setup_image_config.py
+  docker exec -w /app/backend -e CHECKPOINT_NAME="$IMAGE_CHECKPOINT" -e COMFYUI_BASE_URL="http://comfyui:8188" \
+    openwebui python3 setup_image_config.py \
+    || echo "warning: image generation could not be configured - see the message above." >&2
+else
+  echo ""
+  echo "NOTE: no image checkpoint was downloaded, so 'Enable Image Generation' will"
+  echo "      fail until you put one in $COMFY_MODELS/checkpoints/ and run"
+  echo "      setup_image_config.py yourself (see the comment at the bottom of that"
+  echo "      file for the environment variables it expects)."
+fi
 
 echo ""
 echo "== Video generation (LTX) =="
@@ -1117,8 +1258,6 @@ fi
 echo ""
 echo "Next steps:"
 echo "  - Create your admin account at http://localhost:8080 on first visit."
-echo "  - Image generation (ComfyUI): download SDXL checkpoint(s) of your choice"
-echo "    into $MOUNT_POINT/models/image, then configure Admin Settings -> Images."
 echo "  - Customize the model system prompt further: edit setup_register_models.py"
 echo "    in this folder and re-run it (see the comment at the bottom of that file"
 echo "    for the environment variables it expects), or the docker exec command above."

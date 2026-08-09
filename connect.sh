@@ -152,7 +152,35 @@ if [ -n "$CRYPT_PARTITION" ]; then
     }
   fi
   modprobe dm_crypt 2>/dev/null || true
+  # A mapping merely EXISTING is not proof it is usable, so two things are
+  # checked, both established by testing real LUKS containers:
+  #
+  #   1. It must still be backed by the partition we just found - the kernel
+  #      reassigns device paths between connects, so a leftover mapping can
+  #      point at a path that now belongs to a different disk and would read
+  #      perfectly well while being entirely the wrong device.
+  #   2. It must actually be readable. A mapping whose backing device was
+  #      force-removed keeps State: ACTIVE, keeps reporting its old device path,
+  #      and that path can still exist - so every name-based check passes while
+  #      the target underneath is an error target, and the mount then fails with
+  #      "can't read superblock". Reading one block is the only honest test.
+  #
+  # iflag=direct is required: a cached read succeeds against a broken mapping.
+  MAPPING_IS_LIVE=0
   if [ -e "/dev/mapper/$MAPPER_NAME" ]; then
+    MAPPED_BACKING="$(cryptsetup status "$MAPPER_NAME" 2>/dev/null | awk '/^[[:space:]]*device:/ {print $2}')"
+    if [ -n "$MAPPED_BACKING" ] && [ "$MAPPED_BACKING" = "$CRYPT_PARTITION" ] \
+      && dd if="/dev/mapper/$MAPPER_NAME" of=/dev/null bs=4096 count=1 iflag=direct >/dev/null 2>&1; then
+      MAPPING_IS_LIVE=1
+    else
+      echo "Found a stale '$MAPPER_NAME' mapping (backed by '${MAPPED_BACKING:-nothing}',"
+      echo "but this drive is at $CRYPT_PARTITION) - clearing it before unlocking."
+      cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null \
+        || dmsetup remove -f "$MAPPER_NAME" 2>/dev/null \
+        || { echo "ERROR: could not clear the stale mapping '$MAPPER_NAME'." >&2; exit 1; }
+    fi
+  fi
+  if [ "$MAPPING_IS_LIVE" -eq 1 ]; then
     echo "Already unlocked."
   else
     # Interactive by necessity. This is the point the unattended auto-connect

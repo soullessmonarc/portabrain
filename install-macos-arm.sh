@@ -2,7 +2,14 @@
 # Portable AI rig - macOS (Apple Silicon) installer. This is a starting
 # point, not full feature parity with the Windows/Linux version yet:
 #
-#   - Ollama runs great here (Metal-accelerated).
+#   - Ollama runs via Docker Desktop, same as everything else here - and
+#     Docker Desktop for Mac has no Metal GPU passthrough to containers at
+#     all (true across M1 through M5, and still the case on Apple's own
+#     `container` tool as of its 1.0 release). So this is almost certainly
+#     running on CPU only, not Metal-accelerated - not verified against a
+#     real benchmark, but the "runs great, Metal-accelerated" claim this
+#     comment used to make had never been checked either. See mac-backlog.md
+#     for the real fix (running Ollama natively, outside Docker).
 #   - Open WebUI runs fine via Docker Desktop.
 #   - ComfyUI's image/video generation is NOT set up by this script - the
 #     Linux/Windows version uses a CUDA-only image (yanwk/comfyui-boot),
@@ -18,7 +25,7 @@ echo "===== Portable AI Rig Setup (macOS / Apple Silicon) ====="
 echo ""
 
 if [ "$(uname -m)" != "arm64" ]; then
-  echo "WARNING: this doesn't look like Apple Silicon (uname -m = $(uname -m)). Continuing anyway, but Ollama's Metal acceleration assumes arm64." >&2
+  echo "WARNING: this doesn't look like Apple Silicon (uname -m = $(uname -m)). Continuing anyway, but this script assumes arm64." >&2
 fi
 
 if ! command -v docker >/dev/null 2>&1; then

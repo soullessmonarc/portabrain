@@ -329,3 +329,48 @@ PII/secrets sweep Phase 12 covered.
   [issue #3](https://github.com/soullessmonarc/portabrain/issues/3) rather than claimed
   as done - consistent with this project's own rule about not calling something
   "verified" without real hardware behind it.
+
+## Phase 16 - resumable downloads and input hardening in fetch_weight (2026-08-10)
+
+- **Real-hardware failure, caught live.** During a Megatron rebuild, three separate
+  multi-GB downloads (Animagine, LTX, T5) all hit `curl: (92) HTTP/2 stream 1 was not
+  closed cleanly: CANCEL (err 8)` partway through, at 43%, 83%, and 94% respectively -
+  a genuine, reproducible pattern of HTTP/2 stream resets on large transfers, not user
+  error. `fetch_weight()`'s retry loop restarted every download from 0% on each retry,
+  so a failure at 94% meant re-downloading the whole multi-GB file from scratch.
+- Also caught in the same run: a stray character (most likely a terminal/redraw glitch
+  from the interrupted progress meter, not a real user paste) landed in the URL prompt
+  after a failed attempt, producing `curl: (3) URL rejected: No host part in the URL`
+  and burning the remaining retries on garbage input instead of a real retry - silently
+  turning "one transient network blip" into "this download is skipped."
+- **Fixed: resumable downloads.** `curl -C -` now auto-resumes from `$dest.part`'s
+  existing size rather than starting over, tracked against which URL that partial
+  belongs to (a URL change - a pasted alternate, or a CivitAI relocation - correctly
+  wipes it first, since resuming across different URLs would splice two different
+  responses into one corrupt file). Verified both real hosts actually support this
+  before relying on it: Hugging Face confirms `accept-ranges: bytes`; CivitAI's actual
+  Cloudflare R2-backed delivery URL returns a genuine `206 Partial Content` with a
+  correct `Content-Range` on a live range request - checked directly, not assumed from
+  either host's general reputation for supporting it.
+- **Fixed: resume failure doesn't get stuck.** `curl -C -` hard-fails with exit 33 if a
+  server ever doesn't support ranges (confirmed live against a plain Python
+  `http.server` in a standalone test - it does NOT silently fall back to a full
+  download the way an untested assumption might suggest). Exit 33 is now detected
+  specifically and drops back to a full download instead of repeating the identical
+  failure on every remaining attempt.
+- **Fixed: input validation.** A prompt response has to start with `http://` or
+  `https://` to be accepted at all now; anything else is rejected with a clear message
+  and doesn't consume a real attempt or reach curl as a malformed URL.
+- Giving up after 3 attempts (or an explicit `skip`) no longer discards a partial
+  download - it's left in place with a note that re-running the script will resume
+  from there, consistent with this project's broader "safe to re-run" philosophy.
+- All four copies of `fetch_weight()` (`install.sh`, the macOS port in
+  `install-macos-arm.sh`, and the two Megatron-side copies) updated in parity, each
+  independently checked for control-character/CRLF corruption before editing - one of
+  the four was the exact live script a real install run had been executing minutes
+  earlier, confirmed finished and no longer running before it was touched.
+- Verified with an isolated test harness (a real local HTTP server, not just `bash -n`):
+  resume-after-interruption produces byte-correct output, a garbage prompt response is
+  rejected without reaching curl, and a mid-retry URL change wipes stale partial data
+  rather than corrupting the result via a mismatched resume - each scenario checked
+  against actual behavior, not just read for plausibility.

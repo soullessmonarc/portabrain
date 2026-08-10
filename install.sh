@@ -1242,6 +1242,16 @@ fetch_weight() {
 
   mkdir -p "$dest_dir"
   local url="$default_url"
+  # Tracks which URL the current $dest.part (if any) was downloaded from, so
+  # a retry can tell "same URL, safe to resume" from "URL changed, this
+  # partial file is for something else". Seeded to default_url rather than
+  # empty: a .part file already sitting on disk from an earlier run of this
+  # script is assumed to belong to the default URL (the common case - most
+  # retries and re-runs just accept the default), so the first attempt can
+  # resume it instead of discarding real progress on multi-GB files.
+  # Pasting a different URL on that first attempt is exactly the signal that
+  # invalidates that assumption, and is handled below like any other change.
+  local last_url="$default_url"
   local healed=0
   local user_supplied_url=0
   local attempt
@@ -1253,11 +1263,34 @@ fetch_weight() {
     case "$REPLY_URL" in
       skip|SKIP) echo "  Skipped - this file will not be present until added manually."; return 1 ;;
       "") : ;;
-      *) url="$REPLY_URL"; user_supplied_url=1 ;;
+      http://*|https://*) url="$REPLY_URL"; user_supplied_url=1 ;;
+      *)
+        # Guards against garbage ending up in $url at all - including from
+        # this script's own retry loop, not just a mistyped paste: a bad
+        # character has been observed landing in this exact prompt after an
+        # interrupted download's progress meter left the terminal in a
+        # strange state, and curl reporting "URL rejected" on it is a much
+        # worse failure mode than just asking again here.
+        echo "  '$REPLY_URL' doesn't look like a URL (must start with http:// or https://) -" >&2
+        echo "  not attempting a download with it." >&2
+        echo "  (attempt $attempt of 3)" >&2
+        continue
+        ;;
     esac
 
+    # curl's -C - auto-detects the resume offset from $dest.part's current
+    # size - which would silently splice bytes from two different URLs'
+    # responses together if the URL changed since the file was last written.
+    # Only safe when this attempt is retrying the exact same URL as before.
+    if [ "$url" != "$last_url" ]; then
+      rm -f "$dest.part"
+    fi
+    last_url="$url"
+
     echo "  Downloading..."
-    if curl -fL --retry 3 --retry-delay 2 -o "$dest.part" "$url"; then
+    local curl_status=0
+    curl -fL -C - --retry 3 --retry-delay 2 -o "$dest.part" "$url" || curl_status=$?
+    if [ "$curl_status" -eq 0 ]; then
       if [ -s "$dest.part" ]; then
         if [ -n "$expected_sha256" ] && [ "$user_supplied_url" -eq 0 ]; then
           echo "  Verifying checksum..."
@@ -1278,9 +1311,18 @@ fetch_weight() {
         return 0
       fi
       echo "  Download produced an empty file." >&2
+      rm -f "$dest.part"
+    elif [ "$curl_status" -eq 33 ]; then
+      # curl's own code for "server doesn't support resuming this download" -
+      # distinct from a transient network failure, and retrying with -C -
+      # again would just fail the exact same way forever. Drop back to a
+      # full download instead of getting stuck.
+      echo "  Server doesn't support resuming this download - trying a full download instead." >&2
+      rm -f "$dest.part"
+    else
+      echo "  Download failed - $(du -h "$dest.part" 2>/dev/null | cut -f1) downloaded so far, will" >&2
+      echo "  resume from there on the next attempt rather than starting over." >&2
     fi
-    rm -f "$dest.part"
-    echo "  Download failed." >&2
 
     if [ -n "$civitai_model_id" ] && [ "$healed" -eq 0 ] && [ "$url" = "$default_url" ]; then
       healed=1
@@ -1298,7 +1340,11 @@ fetch_weight() {
     fi
     echo "  (attempt $attempt of 3)" >&2
   done
-  echo "  Giving up on $label - it will not be present until added manually." >&2
+  echo "  Giving up on $label for now." >&2
+  if [ -s "$dest.part" ]; then
+    echo "  $(du -h "$dest.part" 2>/dev/null | cut -f1) is already downloaded and left in place -" >&2
+    echo "  re-running this script will resume from there rather than starting over." >&2
+  fi
   return 1
 }
 

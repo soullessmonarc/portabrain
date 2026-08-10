@@ -406,12 +406,12 @@ SMB_MOUNT=""
 if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   # Both of these are normalised, because pasting a whole UNC path into the
   # server prompt is the obvious mistake and it used to produce a silently
-  # broken result. Confirmed live: entering "\\192.0.2.10\MyShare" built
-  # the device string "//\\192.0.2.10\MyShare/MyShare", which not
-  # only failed to mount but - once written to /etc/fstab - made WSL's own
-  # `mount -a` at distro start fail every time, so entering the distro at all
-  # started erroring. `nofail` does not protect against a malformed device
-  # string, so the input has to be cleaned up here instead.
+  # broken result. Confirmed live: entering "\\192.0.2.10\MyShare" built the
+  # device string "//\\192.0.2.10\MyShare/MyShare", which not only failed to
+  # mount but - once written to /etc/fstab - made WSL's own `mount -a` at
+  # distro start fail every time, so entering the distro at all started
+  # erroring. `nofail` does not protect against a malformed device string, so
+  # the input has to be cleaned up here instead.
   normalise_smb_part() {
     local v="$1"
     v="${v//\\//}"                      # backslashes -> forward slashes

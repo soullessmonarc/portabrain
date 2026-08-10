@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.7.0)
+## Current status (v0.7.1)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
@@ -77,6 +77,12 @@ the machine is just a host.
   hardware** - tracked in
   [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). Video generation
   (LTX-Video) remains out of scope on macOS - see [`mac-backlog.md`](../mac-backlog.md).
+- **Weight downloads are now resumable.** Caught live during a real rebuild: three
+  separate multi-GB downloads hit an HTTP/2 stream-reset error partway through, and
+  every retry restarted from 0%. `curl -C -` now resumes from where a failed attempt
+  left off (verified both real hosts actually support this - Hugging Face and CivitAI's
+  real delivery URL both checked live, not assumed), and a prompt response has to
+  actually look like a URL before it's handed to curl at all.
 - **Windows-only convenience layer:** a scheduled-task toast watcher
   (`install-share-watcher.ps1`) surfaces network-share drop/reconnect events mid-session,
   since the underlying heartbeat runs headless there and can't pop its own notification.

@@ -98,9 +98,14 @@ and re-verified.
   only (shellcheck, PSScriptAnalyzer, python syntax). Attaching a physical disk to WSL2
   and reformatting it is not reproducible on a hosted runner, and a green tick that
   didn't exercise any of that would be worse than no tick.
-- **macOS ComfyUI support.** Not started - would need an ARM-compatible image/runtime
-  path distinct from the CUDA-only one used on Linux/Windows. Note also that choosing
-  encryption rules macOS out entirely, since it cannot open LUKS volumes.
+- **macOS ComfyUI support.** Implemented - runs natively on the host rather than in
+  Docker (Docker Desktop for Mac has no Metal GPU passthrough to containers, so a
+  containerised ComfyUI would be CPU-only), reachable from Open WebUI's own Docker
+  container over `http://host.docker.internal:8188`. **Not yet verified on real Apple
+  Silicon hardware** - tracked in
+  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). Video generation
+  (LTX-Video) on macOS remains out of scope - see `mac-backlog.md`. Note also that
+  choosing encryption rules macOS out entirely, since it cannot open LUKS volumes.
 - **Windows 10 is untested.** Mirrored networking needs Windows 11 22H2+, so a Win10
   host falls back to NAT mode. That should be *better* for `localhost` access (NAT mode's
   loopback forwarding bypasses the firewall entirely), but it has not been confirmed, and

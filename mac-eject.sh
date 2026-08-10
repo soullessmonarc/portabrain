@@ -115,6 +115,22 @@ fi
 # the SMB share itself drops. Nothing to stop here.
 
 # ---------------------------------------------------------------------------
+# 2b. Stop ComfyUI, if it's set up
+# ---------------------------------------------------------------------------
+# Unlike the sync/heartbeat agents above, this one actually needs stopping:
+# it's a KeepAlive service (launchd restarts it if it dies) with its working
+# directory and venv living on the drive itself, so it holds open file
+# handles into paths on the drive - the eject below would fail with those
+# still open, the same class of problem `docker compose stop` addresses for
+# the containers.
+COMFYUI_PLIST="$HOME/Library/LaunchAgents/com.portableai.comfyui.plist"
+if [ -f "$COMFYUI_PLIST" ]; then
+  echo "== Stopping ComfyUI =="
+  launchctl unload "$COMFYUI_PLIST" 2>/dev/null || \
+    echo "warning: couldn't unload the ComfyUI service - the eject below will fail too if it's still holding the drive open." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Eject
 # ---------------------------------------------------------------------------
 echo "== Ejecting $MOUNT_POINT =="

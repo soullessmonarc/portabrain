@@ -69,9 +69,14 @@ the machine is just a host.
   already in a format macOS can write to, and `mac-eject.sh` - macOS previously had no
   scripted way to stop the stack before unplugging the drive at all.
 - **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
-  share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. ComfyUI
-  (image/video generation) is **not yet wired up** - the Linux/Windows setup uses a
-  CUDA-only image that doesn't run on Apple Silicon.
+  share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. Image
+  generation now works too - ComfyUI runs natively on the host (Docker Desktop for Mac
+  has no Metal GPU passthrough to containers, so a containerised ComfyUI would be
+  CPU-only), reachable from Open WebUI's Docker container over
+  `http://host.docker.internal:8188`. **Not yet verified on real Apple Silicon
+  hardware** - tracked in
+  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). Video generation
+  (LTX-Video) remains out of scope on macOS - see [`mac-backlog.md`](../mac-backlog.md).
 - **Windows-only convenience layer:** a scheduled-task toast watcher
   (`install-share-watcher.ps1`) surfaces network-share drop/reconnect events mid-session,
   since the underlying heartbeat runs headless there and can't pop its own notification.

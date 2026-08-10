@@ -11,15 +11,22 @@
 #     comment used to make had never been checked either. See mac-backlog.md
 #     for the real fix (running Ollama natively, outside Docker).
 #   - Open WebUI runs fine via Docker Desktop.
-#   - ComfyUI's image/video generation is NOT set up by this script - the
-#     Linux/Windows version uses a CUDA-only image (yanwk/comfyui-boot),
-#     which doesn't run on Apple Silicon at all. A Metal/MPS-based ComfyUI
-#     setup is future work; for now this gets you a working chat+coder rig.
+#   - ComfyUI (image generation) now runs, but natively on the host, not in
+#     Docker - the same GPU passthrough gap above means a containerised
+#     ComfyUI would be CPU-only, defeating the point. Open WebUI stays in
+#     Docker (it doesn't need the GPU) and reaches native ComfyUI over
+#     `http://host.docker.internal:8188`, a Docker Desktop for Mac/Windows
+#     built-in. Implemented per the design in mac-backlog.md, but NOT YET
+#     VERIFIED on real Apple Silicon hardware - tracked in issue #3.
+#   - Video generation (LTX-Video) is still not set up on macOS - explicitly
+#     out of scope for the ComfyUI work above, see mac-backlog.md.
 #
 # Run with: bash install-macos-arm.sh (no sudo needed - Docker Desktop
 # handles its own privilege escalation when it needs to).
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "===== Portable AI Rig Setup (macOS / Apple Silicon) ====="
 echo ""
@@ -398,9 +405,244 @@ docker exec ollama ollama pull "$CHAT_MODEL"
 echo "== Pulling $CODER_MODEL =="
 docker exec ollama ollama pull "$CODER_MODEL"
 
+# ---------------------------------------------------------------------------
+# 4. ComfyUI (image generation) - runs natively on the host, not in Docker
+# ---------------------------------------------------------------------------
+# See the header comment at the top of this file for why: Docker Desktop for
+# Mac has no Metal GPU passthrough to containers, so a containerised ComfyUI
+# would be CPU-only. Open WebUI stays in Docker (it doesn't need the GPU) and
+# reaches this over host.docker.internal, a Docker Desktop for Mac/Windows
+# built-in that resolves to the host's own loopback from inside a container -
+# which is also why ComfyUI is bound to 127.0.0.1 below rather than 0.0.0.0,
+# matching Open WebUI's own localhost-only security default (see
+# SECURITY.md#network-exposure) without needing a wider bind to be reachable
+# from Docker Desktop's side.
+echo ""
+read -r -p "Set up image generation (ComfyUI, runs natively for real GPU access)? [Y/n]: " WANT_COMFYUI
+COMFYUI_READY=0
+if [[ ! "$WANT_COMFYUI" =~ ^[Nn]$ ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "WARNING: python3 not found - ComfyUI needs it and can't be set up. Install" >&2
+    echo "         Python 3 (e.g. via Xcode Command Line Tools: xcode-select --install," >&2
+    echo "         or python.org) and re-run this script to add it later." >&2
+  else
+    COMFYUI_DIR="$MOUNT_POINT/comfyui/ComfyUI"
+    COMFYUI_TAG="v0.31.0"
+    COMFYUI_REPO="https://github.com/Comfy-Org/ComfyUI.git"
+
+    if [ -d "$COMFYUI_DIR/.git" ]; then
+      echo "== ComfyUI checkout already present at $COMFYUI_DIR - leaving it as-is =="
+      echo "   (to move to a different version, remove that folder and re-run)"
+    else
+      echo "== Cloning ComfyUI $COMFYUI_TAG =="
+      mkdir -p "$(dirname "$COMFYUI_DIR")"
+      git clone --branch "$COMFYUI_TAG" --depth 1 "$COMFYUI_REPO" "$COMFYUI_DIR"
+    fi
+
+    echo "== Setting up ComfyUI's Python environment (this can take a few minutes) =="
+    if [ ! -d "$COMFYUI_DIR/venv" ]; then
+      python3 -m venv "$COMFYUI_DIR/venv"
+    fi
+    # shellcheck disable=SC1091
+    source "$COMFYUI_DIR/venv/bin/activate"
+    pip install --quiet --upgrade pip
+    # No separate --index-url for a Metal/MPS build: the standard macOS arm64
+    # PyPI wheels for torch already include MPS support, unlike the CUDA
+    # builds Linux/Windows need a special index for.
+    pip install --quiet -r "$COMFYUI_DIR/requirements.txt"
+    deactivate
+
+    echo ""
+    echo "Two checkpoints are offered. Juggernaut is the general-purpose one and"
+    echo "becomes the default; Animagine is stylised/anime-focused. Either can be"
+    echo "skipped with 'skip' - one is enough to start. Same checkpoints, URLs, and"
+    echo "hashes as the Linux/Windows installer - see NOTICE.md for licensing."
+    COMFYUI_CKPT_DIR="$COMFYUI_DIR/models/checkpoints"
+    JUGGERNAUT_CKPT_NAME="juggernautXL_v9.safetensors"
+    JUGGERNAUT_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/348913?fileId=277777"
+    JUGGERNAUT_CKPT_SHA256="c9e3e68f89b8e38689e1097d4be4573cf308de4e3fd044c64ca697bdb4aa8bca"
+    ANIMAGINE_CKPT_NAME="animagine-xl-3.1.safetensors"
+    ANIMAGINE_CKPT_URL_DEFAULT="https://huggingface.co/cagliostrolab/animagine-xl-3.1/resolve/main/${ANIMAGINE_CKPT_NAME}"
+    ANIMAGINE_CKPT_SHA256="e3c47aedb06418c6c331443cd89f2b3b3b34b7ed2102a3d4c4408a8d35aad6b0"
+
+    # Ported from install.sh (Linux/Windows) almost verbatim - same reasoning
+    # throughout, just shasum -a 256 instead of sha256sum, which macOS
+    # doesn't ship by default.
+    civitai_resolve_url() {
+      local model_id="$1" version_name="$2"
+      python3 - "$model_id" "$version_name" <<'PYEOF'
+import json, sys, urllib.request
+model_id, version_name = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(
+    f"https://civitai.com/api/v1/models/{model_id}",
+    headers={"User-Agent": "curl/8.0"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.load(resp)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+for v in data.get("modelVersions", []):
+    if v.get("name") == version_name:
+        for f in v.get("files", []):
+            if f.get("type") == "Model":
+                print(f"https://civitai.com/api/download/models/{v['id']}?fileId={f['id']}")
+                sys.exit(0)
+print(f"NOTFOUND: '{version_name}' is not among this model's current versions", file=sys.stderr)
+sys.exit(2)
+PYEOF
+    }
+
+    fetch_weight() {
+      local dest_dir="$1" filename="$2" default_url="$3" label="$4"
+      local civitai_model_id="${5:-}" civitai_version_name="${6:-}" expected_sha256="${7:-}"
+      local dest="$dest_dir/$filename"
+
+      if [ -s "$dest" ]; then
+        echo "  $label already present - skipping."
+        return 0
+      fi
+
+      mkdir -p "$dest_dir"
+      local url="$default_url"
+      local healed=0
+      local user_supplied_url=0
+      local attempt
+      for attempt in 1 2 3; do
+        echo ""
+        echo "  $label"
+        echo "  Default: $url"
+        read -r -p "  URL (Enter to accept, or paste another; 'skip' to skip): " REPLY_URL
+        case "$REPLY_URL" in
+          skip|SKIP) echo "  Skipped - this file will not be present until added manually."; return 1 ;;
+          "") : ;;
+          *) url="$REPLY_URL"; user_supplied_url=1 ;;
+        esac
+
+        echo "  Downloading..."
+        if curl -fL --retry 3 --retry-delay 2 -o "$dest.part" "$url"; then
+          if [ -s "$dest.part" ]; then
+            if [ -n "$expected_sha256" ] && [ "$user_supplied_url" -eq 0 ]; then
+              echo "  Verifying checksum..."
+              local actual_sha256
+              actual_sha256="$(shasum -a 256 "$dest.part" | awk '{print tolower($1)}')"
+              if [ "$actual_sha256" != "$(printf '%s' "$expected_sha256" | tr 'A-Z' 'a-z')" ]; then
+                echo "  Checksum mismatch - not trusting this download." >&2
+                rm -f "$dest.part"
+                echo "  (attempt $attempt of 3)" >&2
+                continue
+              fi
+              echo "  Checksum OK."
+            fi
+            mv "$dest.part" "$dest"
+            echo "  Saved to $dest"
+            return 0
+          fi
+          echo "  Download produced an empty file." >&2
+        fi
+        rm -f "$dest.part"
+        echo "  Download failed." >&2
+
+        if [ -n "$civitai_model_id" ] && [ "$healed" -eq 0 ] && [ "$url" = "$default_url" ]; then
+          healed=1
+          echo "  Checking CivitAI for this exact version under a new URL (not a substitute)..."
+          local resolved
+          if resolved="$(civitai_resolve_url "$civitai_model_id" "$civitai_version_name")"; then
+            echo "  Found: $resolved"
+            url="$resolved"
+            default_url="$resolved"
+          fi
+        fi
+        echo "  (attempt $attempt of 3)" >&2
+      done
+      echo "  Giving up on $label - it will not be present until added manually." >&2
+      return 1
+    }
+
+    fetch_weight "$COMFYUI_CKPT_DIR" "$JUGGERNAUT_CKPT_NAME" "$JUGGERNAUT_CKPT_URL_DEFAULT" \
+      "Juggernaut XL v9 checkpoint, photoreal (~6.6GB)" "133005" "V9 + RunDiffusionPhoto 2" "$JUGGERNAUT_CKPT_SHA256" || true
+    fetch_weight "$COMFYUI_CKPT_DIR" "$ANIMAGINE_CKPT_NAME" "$ANIMAGINE_CKPT_URL_DEFAULT" \
+      "Animagine XL 3.1 checkpoint, stylised/anime (~6.9GB)" "" "" "$ANIMAGINE_CKPT_SHA256" || true
+
+    IMAGE_CHECKPOINT=""
+    if [ -s "$COMFYUI_CKPT_DIR/$JUGGERNAUT_CKPT_NAME" ]; then
+      IMAGE_CHECKPOINT="$JUGGERNAUT_CKPT_NAME"
+    elif [ -s "$COMFYUI_CKPT_DIR/$ANIMAGINE_CKPT_NAME" ]; then
+      IMAGE_CHECKPOINT="$ANIMAGINE_CKPT_NAME"
+    fi
+
+    if [ -n "$IMAGE_CHECKPOINT" ]; then
+      echo ""
+      echo "== Installing the ComfyUI launchd service =="
+      mkdir -p "$MOUNT_POINT/workspace/output" "$COMFYUI_DIR/user"
+      cat > "$HOME/Library/LaunchAgents/com.portableai.comfyui.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.portableai.comfyui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$COMFYUI_DIR/venv/bin/python3</string>
+    <string>$COMFYUI_DIR/main.py</string>
+    <string>--listen</string><string>127.0.0.1</string>
+    <string>--port</string><string>8188</string>
+    <string>--output-directory</string><string>$MOUNT_POINT/workspace/output</string>
+    <string>--user-directory</string><string>$COMFYUI_DIR/user</string>
+  </array>
+  <key>WorkingDirectory</key><string>$COMFYUI_DIR</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/portableai-comfyui.log</string>
+  <key>StandardErrorPath</key><string>/tmp/portableai-comfyui.log</string>
+</dict>
+</plist>
+EOF
+      launchctl unload "$HOME/Library/LaunchAgents/com.portableai.comfyui.plist" 2>/dev/null || true
+      launchctl load "$HOME/Library/LaunchAgents/com.portableai.comfyui.plist"
+
+      echo "== Waiting for ComfyUI to come up (up to 2 minutes) =="
+      COMFYUI_UP=0
+      for _ in $(seq 1 24); do
+        if curl -sf --max-time 5 http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
+          COMFYUI_UP=1
+          break
+        fi
+        sleep 5
+      done
+
+      if [ "$COMFYUI_UP" -eq 1 ]; then
+        echo "ComfyUI is up. See /tmp/portableai-comfyui.log if generation ever fails later."
+        echo "== Wiring Open WebUI's image generation to ComfyUI =="
+        docker cp "$SCRIPT_DIR/setup_image_config.py" openwebui:/app/backend/setup_image_config.py
+        docker exec -w /app/backend -e CHECKPOINT_NAME="$IMAGE_CHECKPOINT" \
+          -e COMFYUI_BASE_URL="http://host.docker.internal:8188" \
+          openwebui python3 setup_image_config.py \
+          || echo "warning: image generation could not be configured - see the message above." >&2
+        COMFYUI_READY=1
+      else
+        echo "WARNING: ComfyUI didn't come up within 2 minutes - check /tmp/portableai-comfyui.log." >&2
+        echo "         Image generation was not wired up. Once it's running, re-run this script" >&2
+        echo "         or run setup_image_config.py yourself (see its own comments)." >&2
+      fi
+    else
+      echo ""
+      echo "NOTE: no image checkpoint was downloaded, so image generation will not be"
+      echo "      configured. Put one in $COMFYUI_CKPT_DIR and re-run this script to add it later."
+    fi
+  fi
+fi
+
 echo ""
 echo "Done. Open WebUI: http://localhost:8080"
 echo ""
+if [ "$COMFYUI_READY" -eq 1 ]; then
+  echo "Image generation: ready (ComfyUI running natively at http://127.0.0.1:8188)."
+else
+  echo "Image generation: not set up this run - re-run this script to add it."
+fi
+echo ""
 echo "Not set up yet on macOS (see the note at the top of this script):"
-echo "  - ComfyUI image/video generation (needs a Metal/MPS-based setup, not the CUDA image used on Linux/Windows)"
+echo "  - Video generation (LTX-Video) - explicitly out of scope for the ComfyUI work above, see mac-backlog.md"
 docker compose ps

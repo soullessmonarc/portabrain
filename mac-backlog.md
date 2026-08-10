@@ -5,8 +5,15 @@ not yet implemented.
 
 ## Native ComfyUI image generation, alongside Ollama
 
-`install-macos-arm.sh` currently only sets up Ollama + Open WebUI via Docker
-Desktop. Image generation (ComfyUI) is explicitly flagged in its own header
+**Implemented in `install-macos-arm.sh`, following the design below - but not
+yet verified on real Apple Silicon hardware.** Tracked in
+[issue #3](https://github.com/soullessmonarc/portabrain/issues/3); if you
+have a Mac, testing it and reporting back there is exactly what's needed
+next. The design sketch is kept below as-built documentation, not as a plan
+still to be written.
+
+`install-macos-arm.sh` previously only set up Ollama + Open WebUI via Docker
+Desktop. Image generation (ComfyUI) was explicitly flagged in its own header
 as future work, since the Linux/Windows ComfyUI container image
 (`yanwk/comfyui-boot`) is CUDA-only and doesn't run on Apple Silicon at all.
 

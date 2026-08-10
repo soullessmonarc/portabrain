@@ -173,9 +173,22 @@ the compose file with both fixes.
 3. Optionally set up a network share - the password is stored in the macOS Keychain,
    not in a file.
 4. Ollama and Open WebUI come up via Docker Desktop.
+5. Optionally set up image generation - ComfyUI, but running **natively on the host**,
+   not in Docker. Docker Desktop for Mac has no Metal GPU passthrough to containers, so
+   a containerised ComfyUI would be CPU-only; running it natively is the only way to get
+   real GPU acceleration. Open WebUI (still in Docker) reaches it over
+   `http://host.docker.internal:8188`. This step clones ComfyUI, sets up its own Python
+   venv, and offers the same two checkpoints (and the same checksums) as the
+   Linux/Windows installer.
 
-**Known gap:** ComfyUI (image/video generation) is not part of this path yet - see
-[`EXECUTIVE_SUMMARY.md`](EXECUTIVE_SUMMARY.md).
+> [!WARNING]
+> **The native ComfyUI setup above is implemented but not yet verified on real Apple
+> Silicon hardware** - this project's own drives were all built and tested on
+> Linux/Windows. If you try it, please report back (working or not) on
+> [issue #3](https://github.com/soullessmonarc/portabrain/issues/3).
+
+**Known gap:** video generation (LTX-Video) is not part of the macOS path yet - see
+[`mac-backlog.md`](../mac-backlog.md) and [`EXECUTIVE_SUMMARY.md`](EXECUTIVE_SUMMARY.md).
 
 ## Ending a session
 

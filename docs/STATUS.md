@@ -297,3 +297,35 @@ PII/secrets sweep Phase 12 covered.
   containers a user has running, then ejects. Reviewed in full before merging: syntax
   clean, CI green on the PR branch and after merge, and the logic holds up against a
   careful read - no shortcuts taken just because it came from outside.
+
+## Phase 15 - native ComfyUI on macOS, implemented from CMDRPhaedra's design (2026-08-10)
+
+- CMDRPhaedra's second PR added `mac-backlog.md`, a design sketch for running ComfyUI
+  natively on macOS (Docker Desktop for Mac has no Metal GPU passthrough to containers,
+  confirmed still true as of Apple's own `container` tool hitting 1.0 in June 2026 - GPU
+  passthrough remains an open, uncommitted roadmap item there too). Implemented
+  faithfully in `install-macos-arm.sh`: clones `Comfy-Org/ComfyUI` (the project's actual
+  current home - verified live via the GitHub API, since a web search while researching
+  turned up stale/conflicting version data) at `v0.31.0`, sets up its own venv, offers
+  the same two checkpoints as `install.sh` with the same URLs and SHA256 hashes, runs it
+  as a `launchd` service bound to `127.0.0.1:8188` (matching Open WebUI's own
+  localhost-only default), and wires it into Open WebUI via the existing
+  `setup_image_config.py` completely unchanged - it was already engine-agnostic - over
+  `http://host.docker.internal:8188`.
+- `mac-eject.sh` now unloads the ComfyUI `launchd` job before its existing stop/eject
+  sequence, since its open file handles into the drive would otherwise block ejecting.
+- Also fixed the Ollama-in-Docker header comment mac-backlog.md flagged in passing: it
+  claimed "Metal-accelerated" without ever having checked, and Ollama runs the same
+  containerised path with the same GPU-passthrough gap - corrected to say what's
+  actually known rather than repeat an unverified claim.
+- **Explicitly not verified on real Apple Silicon hardware** - this project's own drives
+  have all been built and tested on Linux/Windows. Every script here passes `bash -n`
+  and `shellcheck --severity=warning` cleanly (verified locally against the exact CI
+  command, not assumed), which proves the code parses and is free of known bad
+  patterns - not that the venv setup succeeds, that the `launchd` service actually
+  starts, that `host.docker.internal` is reachable from inside the `openwebui`
+  container, or that ComfyUI is genuinely Metal-accelerated rather than silently falling
+  back to CPU. Tracked openly in
+  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3) rather than claimed
+  as done - consistent with this project's own rule about not calling something
+  "verified" without real hardware behind it.

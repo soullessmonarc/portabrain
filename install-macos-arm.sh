@@ -35,13 +35,32 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Pick where this rig lives
 # ---------------------------------------------------------------------------
-echo "== Available volumes =="
+echo "== Available external volumes =="
 DEFAULT_VOL="/Volumes"
-ls -1 "$DEFAULT_VOL" 2>/dev/null | sed 's/^/  - /'
+FOUND_EXTERNAL=0
+for v in "$DEFAULT_VOL"/*/; do
+  [ -d "$v" ] || continue
+  name="$(basename "$v")"
+  loc="$(diskutil info "$v" 2>/dev/null | awk -F': *' '/Device Location/{print $2}')"
+  if [ "$loc" = "External" ]; then
+    echo "  - $name"
+    FOUND_EXTERNAL=1
+  fi
+done
+if [ "$FOUND_EXTERNAL" -eq 0 ]; then
+  echo "  (none found - plug in an external drive and re-run)"
+fi
 echo ""
 read -r -p "Path to an external drive/folder to use for this rig (e.g. /Volumes/MyDrive): " BASE_DIR
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
   echo "ERROR: '$BASE_DIR' doesn't exist. Plug in the drive (or pick an existing folder) and re-run." >&2
+  exit 1
+fi
+
+BASE_MOUNT="$(df -P "$BASE_DIR" | tail -1 | awk '{print $NF}')"
+BASE_LOC="$(diskutil info "$BASE_MOUNT" 2>/dev/null | awk -F': *' '/Device Location/{print $2}')"
+if [ "$BASE_LOC" != "External" ]; then
+  echo "ERROR: '$BASE_DIR' is on an internal drive (diskutil reports: ${BASE_LOC:-unknown}). This rig is meant to live on an external drive you can move between machines - plug one in and pick it from the list above." >&2
   exit 1
 fi
 

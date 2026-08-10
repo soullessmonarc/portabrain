@@ -35,33 +35,132 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Pick where this rig lives
 # ---------------------------------------------------------------------------
+# Two paths: use a folder on a drive that's already in a format macOS can
+# write to (APFS, Mac OS Extended/HFS+, or ExFAT), or format an external disk
+# from scratch - blank, or left over from Windows/Linux as NTFS (macOS mounts
+# that read-only) or ext4 (macOS can't even read it).
+#
+# No mapfile/readarray below: macOS ships bash 3.2 (GPLv3 avoidance), which
+# doesn't have it - unlike install.sh, which only ever runs on Linux/WSL2's
+# much newer bash.
+SUPPORTED_FS_REGEX='^(APFS|Mac OS Extended|ExFAT|MS-DOS)'
+
 echo "== Available external volumes =="
-DEFAULT_VOL="/Volumes"
-FOUND_EXTERNAL=0
-for v in "$DEFAULT_VOL"/*/; do
+SUPPORTED_VOLS=()
+UNSUPPORTED_COUNT=0
+for v in /Volumes/*/; do
   [ -d "$v" ] || continue
   name="$(basename "$v")"
-  loc="$(diskutil info "$v" 2>/dev/null | awk -F': *' '/Device Location/{print $2}')"
-  if [ "$loc" = "External" ]; then
-    echo "  - $name"
-    FOUND_EXTERNAL=1
+  info="$(diskutil info "$v" 2>/dev/null)" || continue
+  loc="$(printf '%s' "$info" | awk -F': *' '/Device Location/{print $2}')"
+  [ "$loc" = "External" ] || continue
+  fs="$(printf '%s' "$info" | awk -F': *' '/File System Personality/{print $2}')"
+  ro="$(printf '%s' "$info" | awk -F': *' '/Volume Read-Only/{print $2}')"
+  if [ "$ro" = "No" ] && printf '%s' "$fs" | grep -qE "$SUPPORTED_FS_REGEX"; then
+    echo "  - $name ($fs)"
+    SUPPORTED_VOLS+=("$name")
+  else
+    UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT + 1))
   fi
 done
-if [ "$FOUND_EXTERNAL" -eq 0 ]; then
-  echo "  (none found - plug in an external drive and re-run)"
+if [ "${#SUPPORTED_VOLS[@]}" -eq 0 ]; then
+  echo "  (none found - a drive plugged in but not listed here may need formatting; see option 2 below)"
 fi
-echo ""
-read -r -p "Path to an external drive/folder to use for this rig (e.g. /Volumes/MyDrive): " BASE_DIR
-if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
-  echo "ERROR: '$BASE_DIR' doesn't exist. Plug in the drive (or pick an existing folder) and re-run." >&2
-  exit 1
+if [ "$UNSUPPORTED_COUNT" -gt 0 ]; then
+  echo "  ($UNSUPPORTED_COUNT external drive(s) hidden - not in a format macOS can write to; use option 2 to format one)"
 fi
 
-BASE_MOUNT="$(df -P "$BASE_DIR" | tail -1 | awk '{print $NF}')"
-BASE_LOC="$(diskutil info "$BASE_MOUNT" 2>/dev/null | awk -F': *' '/Device Location/{print $2}')"
-if [ "$BASE_LOC" != "External" ]; then
-  echo "ERROR: '$BASE_DIR' is on an internal drive (diskutil reports: ${BASE_LOC:-unknown}). This rig is meant to live on an external drive you can move between machines - plug one in and pick it from the list above." >&2
-  exit 1
+echo ""
+echo "How should this rig get its storage?"
+echo "  1) Use a folder on one of the drives listed above"
+echo "  2) Format an external drive now (ERASES EVERYTHING on it)"
+read -r -p "Select [1/2, default 1]: " STORAGE_CHOICE
+STORAGE_CHOICE="${STORAGE_CHOICE:-1}"
+
+if [ "$STORAGE_CHOICE" = "2" ]; then
+  echo ""
+  echo "== External disks available to format =="
+  DISK_LINES=()
+  while IFS= read -r d; do
+    [ -n "$d" ] && DISK_LINES+=("$d")
+  done < <(diskutil list external physical 2>/dev/null | grep -E '^/dev/disk[0-9]+ \(external, physical\):' | awk '{print $1}' | xargs -n1 basename)
+
+  if [ "${#DISK_LINES[@]}" -eq 0 ]; then
+    echo "ERROR: no external physical disks found. Plug one in and re-run." >&2
+    exit 1
+  fi
+
+  for i in "${!DISK_LINES[@]}"; do
+    d="${DISK_LINES[$i]}"
+    dinfo="$(diskutil info "$d" 2>/dev/null)"
+    dname="$(printf '%s' "$dinfo" | awk -F': *' '/Device.*Media Name/{print $2}')"
+    dsize="$(printf '%s' "$dinfo" | awk -F': *' '/Disk Size/{print $2}' | sed -E 's/ \(.*//')"
+    printf "  %s) %-8s %10s  %s\n" "$((i + 1))" "$d" "$dsize" "${dname:-(unknown model)}"
+  done
+
+  DISK_ID=""
+  while [ -z "$DISK_ID" ]; do
+    read -r -p "Select the drive to format [1-${#DISK_LINES[@]}]: " DISK_CHOICE
+    if ! printf '%s' "$DISK_CHOICE" | grep -qE '^[0-9]+$' || [ "$DISK_CHOICE" -lt 1 ] || [ "$DISK_CHOICE" -gt "${#DISK_LINES[@]}" ]; then
+      echo "Please enter a number between 1 and ${#DISK_LINES[@]}."
+      continue
+    fi
+    DISK_ID="${DISK_LINES[$((DISK_CHOICE - 1))]}"
+  done
+
+  echo ""
+  echo "!!! WARNING !!!"
+  echo "This will ERASE EVERYTHING on /dev/$DISK_ID and reformat it as APFS."
+  read -r -p "Type YES (in capitals) to confirm and continue: " CONFIRM
+  if [ "$CONFIRM" != "YES" ]; then
+    echo "Aborted, nothing was changed."
+    exit 1
+  fi
+
+  VOLNAME=""
+  while [ -z "$VOLNAME" ]; do
+    read -r -p "Name for the new volume [PortableAI]: " VOLNAME
+    VOLNAME="${VOLNAME:-PortableAI}"
+    if ! printf '%s' "$VOLNAME" | grep -qE '^[A-Za-z0-9 _-]+$'; then
+      echo "  Use only letters, numbers, spaces, - and _."
+      VOLNAME=""
+    fi
+  done
+
+  echo "== Formatting /dev/$DISK_ID as APFS ($VOLNAME) =="
+  diskutil eraseDisk APFS "$VOLNAME" GPT "/dev/$DISK_ID"
+
+  BASE_DIR="/Volumes/$VOLNAME"
+  for _ in $(seq 1 10); do
+    [ -d "$BASE_DIR" ] && break
+    sleep 1
+  done
+  if [ ! -d "$BASE_DIR" ]; then
+    echo "ERROR: formatted the drive but $BASE_DIR never appeared." >&2
+    exit 1
+  fi
+else
+  echo ""
+  read -r -p "Path to an external drive/folder to use for this rig (e.g. /Volumes/MyDrive): " BASE_DIR
+  if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
+    echo "ERROR: '$BASE_DIR' doesn't exist. Plug in the drive (or pick an existing folder) and re-run." >&2
+    exit 1
+  fi
+
+  BASE_MOUNT="$(df -P "$BASE_DIR" | tail -1 | awk '{print $NF}')"
+  BASE_INFO="$(diskutil info "$BASE_MOUNT" 2>/dev/null)"
+  BASE_LOC="$(printf '%s' "$BASE_INFO" | awk -F': *' '/Device Location/{print $2}')"
+  if [ "$BASE_LOC" != "External" ]; then
+    echo "ERROR: '$BASE_DIR' is on an internal drive (diskutil reports: ${BASE_LOC:-unknown}). This rig is meant to live on an external drive you can move between machines - plug one in and pick it from the list above." >&2
+    exit 1
+  fi
+
+  BASE_RO="$(printf '%s' "$BASE_INFO" | awk -F': *' '/Volume Read-Only/{print $2}')"
+  BASE_FS="$(printf '%s' "$BASE_INFO" | awk -F': *' '/File System Personality/{print $2}')"
+  if [ "$BASE_RO" != "No" ] || ! printf '%s' "$BASE_FS" | grep -qE "$SUPPORTED_FS_REGEX"; then
+    echo "ERROR: '$BASE_DIR' is formatted as ${BASE_FS:-unknown}, which macOS can't write to. Re-run and choose option 2 to format it, or pick a different drive." >&2
+    exit 1
+  fi
 fi
 
 MOUNT_POINT="$BASE_DIR/portable-ai"

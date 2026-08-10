@@ -12,7 +12,7 @@
 ![PowerShell 5.1+](https://img.shields.io/badge/powershell-5.1%2B-5391FE?logo=powershell&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-required-2496ED?logo=docker&logoColor=white)
 ![Ollama](https://img.shields.io/badge/ollama-supported-000000?logo=ollama&logoColor=white)
-![License: private](https://img.shields.io/badge/license-private-lightgrey)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
 
@@ -20,20 +20,38 @@ That lint badge covers **static analysis only** - shellcheck, PSScriptAnalyzer a
 python syntax. There is no integration test and there cannot usefully be one: this
 project attaches a physical disk to WSL2 and reformats it, which no hosted runner can
 reproduce. A green tick means the code parses and is free of known bad patterns, not
-that the rig works. The licence badge says "private" because no public licence has been
-granted.
+that the rig works.
+
+> [!WARNING]
+> **Read this before running anything.**
+>
+> - **Built with the help of AI**, under a human's direction and review, and disclosed
+>   here plainly rather than left for you to notice. That does not make it more or less
+>   trustworthy than code from any other source - it means you should read a script
+>   before running it as root or Administrator, the same as you would for anything else.
+>   `install.sh` / `install-windows.ps1` can **reformat a physical disk**, and this stack
+>   is built to run **uncensored/abliterated models with no content filter**. Do your own
+>   due diligence first.
+> - **A personal side project, not a product.** Built over an extended period out of
+>   curiosity about what was possible, by one unpaid maintainer, for personal use on
+>   personal hardware - not commissioned, not a company roadmap item, and not something
+>   rushed out in a day. See [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
+>   for an itemised, honest account of what has and hasn't actually been verified.
+> - **Not intended for business or commercial use.** This repo's [`LICENSE`](LICENSE)
+>   (MIT) does not - and legally cannot - forbid that, but that was never the intent
+>   behind sharing this, and nothing here comes with a support commitment. Weigh that
+>   before depending on it for anything that matters financially.
 
 > [!IMPORTANT]
 > **What is verified on real hardware:** the full install → connect → disconnect
-> lifecycle on a blank SSD in a fresh WSL distro; a reconnect reusing what is already on
-> the drive rather than re-downloading it; ComfyUI running; and the video-generation
-> Action installing and binding to the models.
+> lifecycle on a blank SSD in a fresh WSL distro, including a real-hardware LUKS
+> encryption format/unlock/lock cycle; a reconnect reusing what is already on the drive
+> rather than re-downloading it; ComfyUI running; image generation producing a real
+> render through Open WebUI's own config path; and video generation producing an actual
+> clip, not just the button installing.
 >
 > **What is not:** portability itself. Everything was proven on *one* machine - moving
-> the drive to a different machine, which is the entire point, is still untested. Video
-> *generation* has not been run end-to-end (the Action and its wiring are verified; the
-> pipeline itself is not), and **LUKS encryption has never been exercised on a real
-> drive** - only against a loopback device. See
+> the drive to a different machine, which is the entire point, is still untested. See
 > [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the itemised
 > breakdown.
 
@@ -100,6 +118,12 @@ log on. `disconnect.ps1` removes that task again; `connect.ps1` restores it.
 Open `http://localhost:8080` once the stack finishes starting. For macOS Apple Silicon,
 or the full walkthrough for either path above, see
 [`docs/MASTER_SETUP.md`](docs/MASTER_SETUP.md).
+
+**How long the first install actually takes:** realistically **45 minutes to a bit over
+2 hours**, almost entirely download time (container images plus whichever model weights
+you choose), and it varies a lot with your internet connection. See
+[Setup time](docs/MASTER_SETUP.md#setup-time) for the measured breakdown - every number
+there is a real timing from running this installer, not a vendor estimate.
 
 ## Encryption
 

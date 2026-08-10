@@ -1,0 +1,68 @@
+MIT License
+
+Copyright (c) 2026 soullessmonarc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## Context for this particular MIT grant
+
+The license above is the actual legal terms, and it is deliberately the
+plain, unmodified MIT text - no added field-of-use or non-commercial clause,
+because that would stop this from being open source in any meaningful sense.
+The paragraphs below are context on *why* this project exists and *how* it
+was built, not additional legal conditions. Nothing here narrows the grant
+above.
+
+**This was written with the help of AI.** Large parts of the code, the
+comments explaining it, and this documentation were produced in collaboration
+with an AI coding assistant, under a human's direction and review. That is
+disclosed here plainly rather than left for you to guess. It does not change
+what the MIT license permits you to do with the code - but it is a fact worth
+knowing before you decide how much to trust any given line without reading it
+yourself.
+
+**Do your own due diligence before running any of this - AI-assisted or not.**
+`install.sh` and `install-windows.ps1` can reformat a physical disk, and this
+stack is explicitly designed to run uncensored/abliterated models with no
+content filter. Read a script before running it as root or as Administrator.
+This applies to code from any source, not specifically because AI was
+involved in writing it - but it applies here too.
+
+**This was not built in a day.** It is a personal side project, developed
+over an extended period out of curiosity about what was actually possible to
+build this way - not a company's roadmap item, not a product with a support
+commitment behind it, and not something rushed out. Bugs were found in
+exactly the way you would expect from that: by running it for real, on real
+hardware, repeatedly, and fixing what broke each time. See
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for an honest,
+itemised account of what has and has not actually been verified.
+
+**This is for personal curiosity, not business use.** It was built to see
+what was possible, for one person's own hardware and own use, not as
+something intended to be deployed commercially or relied on in a business
+context. The MIT license does not and cannot legally forbid that use - MIT
+never does, for anyone - but that was never the intent behind sharing it, and
+you should weigh that before building anything you depend on financially on
+top of a personal side project with a single, unpaid maintainer.
+
+None of the above is a substitute for reading the code, and none of it
+transfers any risk away from you. See the warranty disclaimer above - it is
+the actual operative term, and it means exactly what it says.

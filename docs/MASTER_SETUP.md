@@ -3,6 +3,36 @@
 End-to-end instructions for going from a blank drive to a running stack, for each
 supported platform.
 
+## Setup time
+
+**Realistic first-install total: 45 minutes to a bit over 2 hours**, almost entirely
+download time, and dominated by your internet connection more than anything else about
+your machine. Every number below is a **real measurement from actually running this
+installer** on this project's own hardware, not a vendor estimate or a guess - taken
+from two separate install runs on two different network conditions, which is also why
+several rows show a range rather than one number.
+
+| Step | Measured | Notes |
+|---|---|---|
+| Partition, format, (optional) LUKS encrypt | under a minute | Fast on any SSD; not the bottleneck |
+| Docker Engine + NVIDIA Container Toolkit | not independently timed | Every test run this project has done reused a distro that already had these installed. Budget a few extra minutes on a genuinely fresh machine - `apt install` plus the toolkit setup, nothing exotic |
+| Container images (Ollama + ComfyUI + Open WebUI), pulled in parallel | **~16 to ~28 minutes**, bottlenecked by the ComfyUI image | Measured twice: 16.3 min on one run, 28.4 min on another, same images, different network conditions. Individually: Open WebUI 5–19 min, Ollama 9–15 min, ComfyUI 16–28 min |
+| Chat + coder LLM pull (2× 7B, ~9.4GB total) | not independently isolated in testing | Estimated 5–12 min at the throughput observed elsewhere in these tests; budget more on a slow connection |
+| SDXL checkpoint(s) for image generation | **~6 minutes each**, measured | ~6.5GB apiece. One is enough to start; the installer offers a second for variety |
+| LTX-Video weights (checkpoint + text encoder) | **~9 min + ~5–9 min**, measured | The larger of the two files failed partway through on one real run - a transient network error, not a bug - and the installer's retry logic recovered automatically on the second attempt, adding a few minutes |
+
+Add it up and a **from-scratch install choosing every optional weight** (both SDXL
+checkpoints, video generation, uncensored models) lands around an hour on decent home
+broadband, stretching past two hours on a slow connection. Skipping the second SDXL
+checkpoint or video generation shortens it accordingly - `install.sh` lets you type
+`skip` on any weight prompt.
+
+**Reconnecting is fast.** None of the above repeats on a later `connect.ps1` /
+`connect.sh` run - everything already on the drive is reused, verified live: a
+reconnect with 30.8GB of images and 8.9GB of weights already present needed no
+network at all and came up in well under a minute once the passphrase (if encrypted)
+was entered.
+
 ## Windows (via WSL2)
 
 **Prerequisites** (one-time per machine):
@@ -128,8 +158,14 @@ reformat it) to regenerate the compose file with pinned tags.
 
 ## Ending a session
 
-There's no unmount/eject step built into this generic template today (the personal-rig
-fork has `Disconnect AI.ps1`/`eject.sh` for that, since it needs to coordinate with
-Docker Desktop's WSL integration to release the disk cleanly). For this template,
-stopping the stack is a plain `docker compose down` from the stack directory before
-physically removing the drive.
+Run `disconnect.ps1` (Windows) or `eject.sh` (native Linux) before physically removing
+the drive - see [Quick start](../README.md#quick-start) above. It stops the stack,
+stops the daemons whose data-root lives on the drive, unmounts, locks the drive again
+if it's encrypted, and releases the raw disk back to Windows. It refuses to release the
+disk if any of that fails, rather than reporting success and leaving the filesystem
+mounted underneath a physically-removed drive.
+
+Docker Desktop, if present on the machine, does not need to be stopped for this to
+work: the rig runs its own Docker Engine inside the WSL distro, and `eject.sh` blocks
+systemd socket activation for the duration of the unmount so Docker Desktop's own WSL
+probing can't interfere, whether or not it happens to be running.

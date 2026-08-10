@@ -24,7 +24,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$StateDir = Join-Path $env:LOCALAPPDATA "PortableAI"
+# Scoped by distro, not a single shared file: this machine can run more than
+# one rig at once (this repo's own copy plus a template-based rig), each its
+# own WSL distro with its own scheduled share-watcher task. A single shared
+# state file would let one rig's "share is down" transition get silently
+# overwritten by the other's next run, and either drop a real alert or fire a
+# false "recovered" toast for a share that never actually came back.
+$StateDir = Join-Path $env:LOCALAPPDATA "PortableAI\$Distro"
 $StateFile = Join-Path $StateDir "share-watch-state.json"
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 

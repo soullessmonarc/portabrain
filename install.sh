@@ -257,10 +257,40 @@ if [ "$PART_TYPE" = "crypto_LUKS" ]; then
       && dd if="/dev/mapper/$MAPPER_NAME" of=/dev/null bs=4096 count=1 iflag=direct >/dev/null 2>&1; then
       MAPPING_IS_LIVE=1
     else
-      echo "Found a stale '$MAPPER_NAME' mapping (backed by '${MAPPED_BACKING:-nothing}',"
-      echo "but this drive is at $PARTITION) - clearing it before unlocking."
+      # Before touching anything: the device-match/direct-IO check above can
+      # give a false negative (proven live, not hypothetical - a direct-IO
+      # probe against an actively-mounted mapping failed in exactly this
+      # branch on real hardware and this code then force-removed a mapping
+      # that was genuinely in use). A false "stale" verdict must never
+      # translate into forcibly tearing down a mapping something else is
+      # actually using: `dmsetup remove -f` against a busy device doesn't
+      # fail cleanly - it can silently swap the live table for an error
+      # target, which looks like a normal failure here but actually turns
+      # every subsequent read/write on the real, mounted filesystem into an
+      # I/O error. That is exactly how a live rig's ext4 journal got aborted
+      # and force-remounted read-only. So: check actual usage independently
+      # of the liveness probe, and refuse to proceed at all if it's mounted
+      # or has open references, rather than trusting the probe's verdict.
+      if mount | grep -q "^/dev/mapper/$MAPPER_NAME "; then
+        echo "ERROR: '$MAPPER_NAME' looked stale by the checks above, but it is" >&2
+        echo "actually mounted right now - refusing to touch it. This usually" >&2
+        echo "means a stack is already running from this drive (from an earlier" >&2
+        echo "connect/install that is still up). Stop it first - disconnect.ps1" >&2
+        echo "or eject.sh - then re-run this installer." >&2
+        exit 1
+      fi
+      OPEN_COUNT="$(dmsetup info -c --noheadings -o open "$MAPPER_NAME" 2>/dev/null | tr -d '[:space:]')"
+      if [ -n "$OPEN_COUNT" ] && [ "$OPEN_COUNT" != "0" ]; then
+        echo "ERROR: '$MAPPER_NAME' has $OPEN_COUNT open reference(s) - something" >&2
+        echo "still has it open even though it's not mounted. Refusing to force-" >&2
+        echo "remove a mapping that's in use; find and stop whatever has it open" >&2
+        echo "first (docker, a stray process) rather than re-running this." >&2
+        exit 1
+      fi
+      echo "Found a stale '$MAPPER_NAME' mapping (backed by '${MAPPED_BACKING:-nothing}'"
+      echo "or unreadable via direct I/O) - clearing it before unlocking."
       cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null \
-        || dmsetup remove -f "$MAPPER_NAME" 2>/dev/null \
+        || dmsetup remove "$MAPPER_NAME" 2>/dev/null \
         || { echo "ERROR: could not clear the stale mapping '$MAPPER_NAME'." >&2; exit 1; }
     fi
   fi

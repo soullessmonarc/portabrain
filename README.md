@@ -40,7 +40,11 @@ that the rig works.
 > - **Not intended for business or commercial use.** This repo's [`LICENSE`](LICENSE)
 >   (MIT) does not - and legally cannot - forbid that, but that was never the intent
 >   behind sharing this, and nothing here comes with a support commitment. Weigh that
->   before depending on it for anything that matters financially.
+>   before depending on it for anything that matters financially. This also isn't only
+>   this project's own preference: one of the model checkpoints it can download
+>   (Pony Diffusion V6 XL) carries its own license that **explicitly prohibits
+>   monetized inference** - see [`NOTICE.md`](NOTICE.md) before using anything this
+>   stack generates for more than personal curiosity.
 
 > [!IMPORTANT]
 > **What is verified on real hardware:** the full install → connect → disconnect
@@ -65,6 +69,7 @@ or auto-detected from the hardware in front of it.
 - **How close to production?** → [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
 - **Want the detailed engineering record?** → [`docs/STATUS.md`](docs/STATUS.md)
 - **How does the network-share reliability work?** → [`docs/NETWORK_SHARE_RELIABILITY.md`](docs/NETWORK_SHARE_RELIABILITY.md)
+- **What are you actually agreeing to by downloading the models?** → [`NOTICE.md`](NOTICE.md)
 
 ## Components
 

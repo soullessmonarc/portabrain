@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.4.0)
+## Current status (v0.4.1)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
@@ -42,6 +42,11 @@ the machine is just a host.
 - **Portability itself is still unverified.** The install/connect/disconnect cycle has
   been proven on a single machine; moving the drive to a different one - the entire point
   of the project - has not been tested yet.
+- **The stylised SDXL checkpoint changed.** Pony Diffusion V6 XL is no longer offered -
+  its license explicitly prohibits monetized inference. Animagine XL 3.1 replaces it,
+  verified under plain CreativeML Open RAIL++-M with no such restriction. See
+  [`NOTICE.md`](../NOTICE.md) for the full comparison and a standing note for anyone
+  who already downloaded Pony under an earlier version.
 - **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
   share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. ComfyUI
   (image/video generation) is **not yet wired up** - the Linux/Windows setup uses a

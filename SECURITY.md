@@ -27,6 +27,12 @@ is real encryption rather than a gate.
 - `connect.sh` unlocks it (3 attempts), `disconnect.ps1` locks it again after
   unmounting - a LUKS container cannot be closed while its filesystem is mounted,
   so the ordering matters and is enforced.
+- Format, unlock, mount and lock-on-disconnect have all been verified on real
+  hardware, including a real bug found and fixed there: a mapping whose backing
+  device disappeared without a prior `luksClose` kept reporting itself as active
+  and unlocked, which a name-only check would have trusted. The check now reads
+  a block directly (`iflag=direct`, bypassing the cache) before treating a
+  mapping as genuinely usable.
 - Passphrases are piped on stdin, never passed as command arguments, which would
   make them visible in the process list to every user on the machine.
 

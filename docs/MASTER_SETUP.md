@@ -66,10 +66,14 @@ was entered.
 6. It attaches the disk to WSL2 and hands off to `install.sh`, which asks the rest: local
    mount path, optional network share, standard or uncensored models, and a name for your
    assistant.
-7. Say yes to the share-watcher scheduled task if you configured a network share - that's
+7. It then downloads an SDXL checkpoint for image generation and, separately, the
+   LTX-Video weights - each with its own prompt, a sensible default URL, and `skip` as an
+   option if you don't want it yet. Both wire themselves into Open WebUI automatically;
+   nothing further to configure.
+8. Say yes to the share-watcher scheduled task if you configured a network share - that's
    what raises a toast if the share drops mid-session.
-8. Open WebUI is at `http://localhost:8080` once the stack finishes starting. Expect the
-   first run to take a while: roughly 10GB of container images and 9GB of model weights.
+9. Open WebUI is at `http://localhost:8080` once the stack finishes starting. See
+   [Setup time](#setup-time) above for how long that actually takes.
 
 ### Day-to-day, after that first install
 
@@ -95,6 +99,10 @@ this machine's copy of any share credentials. It refuses to release the disk if 
 unmount fails.
 
 Add `-Distro <name>` to any of these if you are not using the default distro name.
+`disconnect.ps1` resolves it for you when possible - it reads the exact distro from the
+registered auto-connect task, or falls back to the only non-Docker-Desktop WSL distro if
+there's exactly one. It only asks you to specify one explicitly on a machine hosting more
+than one rig, rather than guessing which one you meant.
 
 ### Encryption
 
@@ -134,9 +142,12 @@ reformat it) to regenerate the compose file with pinned tags.
 3. Pick a drive, confirm the format warning if it needs one, pick a mount point.
 4. Optionally set up a network share (server address, share name, username, password).
 5. It installs Docker + the NVIDIA Container Toolkit (GPU-detected, skipped gracefully
-   if no GPU is present), writes the compose stack, and pulls models sized to the VRAM
-   it finds.
-6. Open WebUI is at `http://localhost:8080` once it finishes.
+   if no GPU is present), writes the compose stack, and pulls chat/coder models sized
+   to the VRAM it finds.
+6. Downloads an SDXL checkpoint and the LTX-Video weights (each skippable), and wires
+   both into Open WebUI's image/video generation automatically.
+7. Open WebUI is at `http://localhost:8080` once it finishes. See
+   [Setup time](#setup-time) above for how long that actually takes.
 
 ## macOS (Apple Silicon)
 

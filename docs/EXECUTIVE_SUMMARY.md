@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.3.0)
+## Current status (v0.4.0)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
@@ -27,15 +27,18 @@ the machine is just a host.
   `eject.sh`) bring the rig up and shut it down cleanly, with a WSL keep-alive and a
   logon task so it survives a reboot. The installer is a one-time step, not something
   you re-run to use the rig.
-- **Optional at-rest encryption:** the drive can be built inside a LUKS2 container.
-  Trade-off: no unattended restart, and no macOS support.
-- **Chat, coding and image generation work.** The upstream ComfyUI image this project
-  used had been abandoned and crash-looped on `comfy_aimdo`; images are now pinned to the
-  maintained line and ComfyUI has been verified running on real hardware.
-- **Video generation is wired up but not yet proven.** A "Generate Video (LTX)" Action is
-  installed automatically and verified bound to the models; its weights are downloaded at
-  install time from URLs you can override. The generation pipeline itself has not been
-  run end-to-end.
+- **Optional at-rest encryption:** the drive can be built inside a LUKS2 container -
+  format, unlock, mount, and lock-on-disconnect all verified on real hardware, not just
+  a loopback device. Trade-off: no unattended restart, and no macOS support.
+- **Chat, coding, image and video generation all work, end to end.** The upstream
+  ComfyUI image this project used had been abandoned and crash-looped on `comfy_aimdo`;
+  images are now pinned to the maintained line. Image generation needed two separate
+  fixes before it actually worked (Open WebUI's config pointed nowhere near ComfyUI by
+  default, and ComfyUI's own checkpoint discovery needed a generated config file) - both
+  are now automatic, and a real render has been produced through the actual code path,
+  not just a direct call to ComfyUI that would have missed both bugs. A "Generate Video
+  (LTX)" Action installs automatically, binds to the models, and has produced an actual
+  clip on real hardware.
 - **Portability itself is still unverified.** The install/connect/disconnect cycle has
   been proven on a single machine; moving the drive to a different one - the entire point
   of the project - has not been tested yet.
@@ -49,8 +52,12 @@ the machine is just a host.
 
 ## What's explicitly not done
 
-- No automated test suite or CI - correctness has been verified through live,
-  interactive test runs against real hardware, not a repeatable test harness. See
+- No integration/functional test suite - correctness has been verified through live,
+  interactive test runs against real hardware, not a repeatable test harness, and there
+  cannot usefully be one: this project's job is to reformat a physical disk and install
+  Docker inside WSL2, which no hosted runner can reproduce. Static-analysis CI *does*
+  exist (shellcheck, PSScriptAnalyzer, python syntax - see the badge in the main
+  [README](../README.md)) but by design cannot exercise any of that. See
   [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) for the itemised list.
 - No ComfyUI/image-video generation on macOS.
 - No formal security audit of the credential-handling code - see

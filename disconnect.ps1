@@ -21,10 +21,14 @@ Usage:
   .\disconnect.ps1
   .\disconnect.ps1 -DiskNumber 2
   .\disconnect.ps1 -Distro Ubuntu-24.04
+
+-Distro defaults to whichever distro's auto-connect task is registered, or the
+only non-Docker-Desktop WSL distro if there's exactly one; on a machine with
+more than one candidate and no registered task, it asks rather than guessing.
 #>
 param(
     [int]$DiskNumber = -1,
-    [string]$Distro = "Ubuntu"
+    [string]$Distro = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +42,47 @@ Write-Host ""
 if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
     Write-Error "wsl.exe isn't available on this machine - nothing to disconnect."
     exit 1
+}
+
+if (-not $Distro) {
+    # A hardcoded "Ubuntu" default used to live here. On a machine hosting only
+    # one rig that is a harmless guess; on a machine hosting more than one - this
+    # project explicitly supports several rigs, one per WSL distro - it is a wrong
+    # guess that fails three steps later with "cryptsetup: command not found"
+    # (wrong distro, no cryptsetup installed there) rather than anything that
+    # points at the real problem. Confirmed live.
+    #
+    # connect.ps1/install-windows.ps1 name the auto-connect task after the exact
+    # distro they set up: "PortableAI Auto-Connect (<distro>)". That task is
+    # removed as this script's OWN last step, so it is only there to read before
+    # a disconnect has ever completed - which is exactly the situation this
+    # matters for.
+    $taskMatches = @(Get-ScheduledTask -TaskName "PortableAI Auto-Connect (*)" -ErrorAction SilentlyContinue)
+    if ($taskMatches.Count -eq 1 -and $taskMatches[0].TaskName -match '^PortableAI Auto-Connect \((.+)\)$') {
+        $Distro = $Matches[1]
+        Write-Host "No -Distro given - using '$Distro' (from the registered auto-connect task)."
+    }
+}
+if (-not $Distro) {
+    # Falls back to whichever WSL distros exist, minus Docker Desktop's own
+    # internal "docker-desktop" distro (never the rig's). Exactly one candidate is
+    # a safe guess; more than one is real ambiguity this script cannot resolve on
+    # its own - asking beats guessing wrong and failing confusingly several steps
+    # later, which is what the old hardcoded default did.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $allDistros = @(((wsl -l -q) -replace "`0", "") | Where-Object { $_.Trim() -and $_.Trim() -ne "docker-desktop" } | ForEach-Object { $_.Trim() })
+    $ErrorActionPreference = $prevEAP
+    if ($allDistros.Count -eq 1) {
+        $Distro = $allDistros[0]
+        Write-Host "No -Distro given - using '$Distro' (the only WSL distro besides Docker Desktop's own)."
+    } elseif ($allDistros.Count -gt 1) {
+        Write-Error "No -Distro given, and more than one WSL distro could be the rig: $($allDistros -join ', '). Re-run with -Distro <name>."
+        exit 1
+    } else {
+        Write-Error "No -Distro given, and no WSL distro was found to guess from. Re-run with -Distro <name>."
+        exit 1
+    }
 }
 
 # Checked up front, because getting this wrong is easy and the consequence is
@@ -349,8 +394,34 @@ try {
     if ($DiskNumber -lt 0) {
         $candidates = Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.GptType -eq "{$linuxGuid}" } | Select-Object -ExpandProperty DiskNumber -Unique
         if (-not $candidates) {
-            Write-Warning "No disk with a Linux (ext4) partition found -- it may already be released. Skipping wsl --unmount."
-            $DiskNumber = -1
+            # Get-Partition cannot see partitions on a disk WSL2 currently holds
+            # bare-attached - and that is not a corner case, it is the NORMAL state
+            # at exactly this point in a disconnect, since the disk has been
+            # attached the whole time. This branch used to just give up here, when
+            # what it needed was a fallback that still works while attached.
+            # Confirmed live: a real disconnect ran everything else correctly -
+            # stack stopped, filesystem unmounted, LUKS container locked - and then
+            # never released the raw disk at all, because this check found nothing
+            # and silently skipped the rest.
+            #
+            # A disk being Offline is not ambiguous here: only connect.ps1 and
+            # install-windows.ps1 ever take a disk offline in this project, and both
+            # do it for exactly this purpose. Restricting to BusType USB keeps this
+            # from ever matching an internal disk that happens to be offline for
+            # some unrelated reason.
+            $offlineUsb = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsOffline -and $_.BusType -eq "USB" } | Select-Object -ExpandProperty Number)
+            if ($offlineUsb.Count -eq 1) {
+                $DiskNumber = $offlineUsb[0]
+                Write-Host "No partition visible while the disk is attached (expected) - found disk $DiskNumber offline over USB and using that."
+            } elseif ($offlineUsb.Count -gt 1) {
+                Write-Host "More than one offline USB disk found:"
+                Get-Disk | Where-Object { $_.Number -in $offlineUsb } | Format-Table Number, FriendlyName, @{n='GB';e={[math]::Round($_.Size/1GB)}}, BusType
+                Write-Error "Re-run with -DiskNumber <N> to pick one."
+                exit 1
+            } else {
+                Write-Warning "No disk with a Linux (ext4) partition, and no offline USB disk, was found -- it may already be released. Skipping wsl --unmount."
+                $DiskNumber = -1
+            }
         } elseif (@($candidates).Count -gt 1) {
             Write-Host "More than one candidate disk found:"
             Get-Disk | Where-Object { $_.Number -in $candidates } | Format-Table Number, FriendlyName, @{n='GB';e={[math]::Round($_.Size/1GB)}}, BusType
@@ -381,9 +452,33 @@ try {
             Write-Host "nothing to release. It's safe to unplug."
         } else {
             wsl --unmount "\\.\PHYSICALDRIVE$DiskNumber"
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "wsl --unmount failed. Do not unplug the drive yet."
-                exit 1
+            $unmountExit = $LASTEXITCODE
+            if ($unmountExit -ne 0) {
+                # Confirmed live, and separately from the Get-Partition problem above:
+                # this exact targeted call failed with ERROR_FILE_NOT_FOUND immediately
+                # after a disconnect had already correctly stopped the stack and locked
+                # the encrypted container, with nothing left mounted anywhere - so WSL's
+                # own record of which disk it holds bare-attached had drifted out of
+                # step with reality. This project juggles more than one physical disk
+                # across a session, and other disk activity in between can renumber
+                # PHYSICALDRIVEn without WSL noticing. An untargeted `wsl --unmount`
+                # (release everything WSL2 currently holds bare-attached) succeeded
+                # immediately where the targeted one had just failed.
+                #
+                # Only tried here, after the targeted attempt has failed AND the disk is
+                # still Offline - not as a first resort, because it releases every disk
+                # WSL2 has bare-attached, not just this one. If something unrelated is
+                # deliberately bare-mounted for its own reasons, this is where that gets
+                # swept up too, which is exactly why it isn't the default path.
+                Write-Warning "wsl --unmount \\.\PHYSICALDRIVE$DiskNumber failed (exit $unmountExit). Trying an untargeted 'wsl --unmount', which releases every disk WSL2 currently holds bare-attached, not just this one."
+                wsl --unmount
+                $unmountExit = $LASTEXITCODE
+                $diskState = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+                if ($unmountExit -ne 0 -or ($diskState -and $diskState.IsOffline)) {
+                    Write-Error "wsl --unmount failed. Do not unplug the drive yet."
+                    exit 1
+                }
+                Write-Host "Released."
             }
 
             # connect.ps1 and install-windows.ps1 both take the disk Offline in

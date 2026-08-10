@@ -1096,12 +1096,22 @@ LTX_CKPT_NAME="ltxv-2b-0.9.8-distilled-fp8.safetensors"
 LTX_CLIP_NAME="t5xxl_fp8_e4m3fn.safetensors"
 LTX_CKPT_URL_DEFAULT="https://huggingface.co/Lightricks/LTX-Video/resolve/main/${LTX_CKPT_NAME}"
 LTX_CLIP_URL_DEFAULT="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/${LTX_CLIP_NAME}"
-PONY_CKPT_NAME="ponyDiffusionV6XL.safetensors"
+ANIMAGINE_CKPT_NAME="animagine-xl-3.1.safetensors"
 JUGGERNAUT_CKPT_NAME="juggernautXL_v9.safetensors"
 # Resolved and verified live (HTTP 206, correct filename) via civitai.com's
-# direct download API - civitai.com/models/257749 and civitai.com/models/133005.
-PONY_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/290640?fileId=228616"
+# direct download API - civitai.com/models/133005.
 JUGGERNAUT_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/348913?fileId=277777"
+# Hosted directly on Hugging Face, not CivitAI - no version-relocation logic
+# needed, same as the LTX weights below.
+#
+# This project previously offered Pony Diffusion V6 XL as the stylised/anime
+# checkpoint. Its license (Fair AI Public License 1.0-SD) explicitly prohibits
+# monetized inference, so it was dropped and replaced with Animagine XL 3.1 -
+# CreativeML Open RAIL++-M, verified to explicitly permit commercial use. See
+# NOTICE.md for the full comparison, including a note for anyone who ran an
+# earlier version of this installer and already has Pony's checkpoint file on
+# a drive - that restriction still applies to it regardless of this change.
+ANIMAGINE_CKPT_URL_DEFAULT="https://huggingface.co/cagliostrolab/animagine-xl-3.1/resolve/main/${ANIMAGINE_CKPT_NAME}"
 
 # Re-locates a SPECIFIC named CivitAI checkpoint version if its URL has moved
 # (CivitAI can reassign version/file IDs), by querying the model's own public
@@ -1206,31 +1216,30 @@ fetch_weight() {
 echo ""
 echo "== Image generation (SDXL) =="
 echo "Two checkpoints are offered. Juggernaut is the general-purpose one and"
-echo "becomes the default; Pony is stylised/character-focused. Either can be"
+echo "becomes the default; Animagine is stylised/anime-focused. Either can be"
 echo "skipped with 'skip' - one is enough to start."
 # Juggernaut is fetched first and preferred below because it is the photoreal,
-# general-purpose model. Pony V6 is strongly character/anime-biased and expects
-# its own score_* tag vocabulary: given a plain scene prompt it will happily
-# ignore it and render a character instead. Measured, not assumed - "the moon
-# over a ruined city at night" came back from Pony as anime character art.
-# Pony is still worth having for stylised character work, just not as the
+# general-purpose model. Animagine XL 3.1 is a Danbooru-tag-trained anime
+# checkpoint - its own model card's example prompts are tag lists like "1girl,
+# green hair, looking at viewer, masterpiece, best quality", not plain scene
+# descriptions - so it is offered as the stylised option rather than the
 # default an unfamiliar user gets first.
 fetch_weight "$COMFY_MODELS/checkpoints" "$JUGGERNAUT_CKPT_NAME" "$JUGGERNAUT_CKPT_URL_DEFAULT" \
   "Juggernaut XL v9 checkpoint, photoreal (~6.6GB)" "133005" "V9 + RunDiffusionPhoto 2" || true
-fetch_weight "$COMFY_MODELS/checkpoints" "$PONY_CKPT_NAME" "$PONY_CKPT_URL_DEFAULT" \
-  "Pony Diffusion V6 XL checkpoint, stylised/character (~6.5GB)" "257749" "V6 (start with this one)" || true
+fetch_weight "$COMFY_MODELS/checkpoints" "$ANIMAGINE_CKPT_NAME" "$ANIMAGINE_CKPT_URL_DEFAULT" \
+  "Animagine XL 3.1 checkpoint, stylised/anime (~6.9GB)" || true
 
 # Readiness is decided by which file is actually on disk afterwards, NOT by
 # either fetch_weight's exit status. Skipping the first checkpoint but taking
 # the second is a perfectly good outcome, and an earlier version of this block
 # tracked the first download's result in a flag that the second could never
-# clear - so choosing "skip" on Pony and downloading Juggernaut left image
-# generation unconfigured despite a usable checkpoint sitting right there.
+# clear - so choosing "skip" on the second one and downloading Juggernaut left
+# image generation unconfigured despite a usable checkpoint sitting right there.
 IMAGE_CHECKPOINT=""
 if [ -s "$COMFY_MODELS/checkpoints/$JUGGERNAUT_CKPT_NAME" ]; then
   IMAGE_CHECKPOINT="$JUGGERNAUT_CKPT_NAME"
-elif [ -s "$COMFY_MODELS/checkpoints/$PONY_CKPT_NAME" ]; then
-  IMAGE_CHECKPOINT="$PONY_CKPT_NAME"
+elif [ -s "$COMFY_MODELS/checkpoints/$ANIMAGINE_CKPT_NAME" ]; then
+  IMAGE_CHECKPOINT="$ANIMAGINE_CKPT_NAME"
 fi
 
 if [ -n "$IMAGE_CHECKPOINT" ]; then

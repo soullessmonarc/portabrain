@@ -177,3 +177,30 @@ landed.
   that no longer matches Phase 7 above; and a real private IP address, embedded in a
   debugging comment as a "confirmed live" example, was found and redacted before it
   could ship.
+
+## Phase 12 - drop Pony Diffusion V6 XL, replace with Animagine XL 3.1 (2026-08-10)
+
+- After the repo went public, a real personal email address was found embedded in
+  every commit's author metadata (separate from the file-content leak in Phase 11) -
+  rewritten across all 32 commits and both remote branches/tags via `git filter-repo`
+  with a mailmap, verified clean via a fresh clone from GitHub itself. A proper GitHub
+  Release was also created for `v0.4.0`, which had only ever been tagged, not released.
+- Pony Diffusion V6 XL was replaced as the stylised/anime SDXL checkpoint. Its license
+  (Fair AI Public License 1.0-SD) explicitly prohibits monetized inference - a real
+  restriction, not an advisory one, and one this project's own `NOTICE.md` had already
+  flagged as "the one most likely to matter and easiest to miss." Rather than continue
+  offering it, it was dropped.
+- **Animagine XL 3.1** was verified and added in its place - CreativeML Open RAIL++-M,
+  confirmed directly against the model's own license text and model card (not a search
+  summary, which for at least one earlier query returned an incorrect "no restriction on
+  generated images" characterisation of a similarly-named license family). Its model
+  card explicitly notes this license supersedes an earlier, more restrictive community
+  license tag (FAIPL - the same family Pony uses) carried by prior versions of the same
+  repository, which is itself the exact failure mode this swap exists to avoid: a
+  checkpoint's name or lineage is not its license, and both have to be checked directly
+  every time, not assumed from a prior version or a similar-sounding sibling model.
+- `NOTICE.md` and the main `README.md` warning callout keep an explicit, standing note
+  about Pony's restriction rather than silently deleting the reference: if this
+  installer was ever run before this change and a drive already has
+  `ponyDiffusionV6XL.safetensors` on it, that restriction still applies to it regardless
+  of what this project currently offers.

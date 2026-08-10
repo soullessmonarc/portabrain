@@ -106,6 +106,6 @@ asyncio.run(main())
 # when install.sh calls this automatically):
 #   CHECKPOINT_NAME   - filename of the SDXL checkpoint already sitting in
 #                        this stack's ComfyUI/models/checkpoints/ folder,
-#                        e.g. ponyDiffusionV6XL.safetensors
+#                        e.g. animagine-xl-3.1.safetensors
 #   COMFYUI_BASE_URL  - defaults to http://comfyui:8188, this stack's own
 #                        ComfyUI container on the compose network

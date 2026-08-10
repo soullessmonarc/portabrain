@@ -41,10 +41,12 @@ that the rig works.
 >   (MIT) does not - and legally cannot - forbid that, but that was never the intent
 >   behind sharing this, and nothing here comes with a support commitment. Weigh that
 >   before depending on it for anything that matters financially. This also isn't only
->   this project's own preference: one of the model checkpoints it can download
->   (Pony Diffusion V6 XL) carries its own license that **explicitly prohibits
->   monetized inference** - see [`NOTICE.md`](NOTICE.md) before using anything this
->   stack generates for more than personal curiosity.
+>   this project's own preference: read [`NOTICE.md`](NOTICE.md) before using anything
+>   this stack generates for more than personal curiosity. It also carries a note
+>   worth knowing regardless: an earlier version of this project offered
+>   **Pony Diffusion V6 XL**, whose license **explicitly prohibits monetized
+>   inference** - if you ran an earlier version of this installer and already
+>   downloaded it, that restriction still applies to anything generated with it.
 
 > [!IMPORTANT]
 > **What is verified on real hardware:** the full install → connect → disconnect

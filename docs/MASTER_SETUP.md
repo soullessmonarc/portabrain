@@ -162,7 +162,14 @@ the compose file with both fixes.
    bash install-macos-arm.sh
    ```
    (or run `install.sh` and choose option `2` when asked - it hands off automatically.)
-2. Pick an external drive/folder to use.
+2. Pick where the rig lives. Only external drives are ever listed or accepted - an
+   internal disk is refused outright, the same as the Windows/Linux picker. Two paths:
+   - **Use an already-external, already-writable drive** - APFS, HFS+, ExFAT, or FAT
+     only; a drive plugged in from Windows/Linux (NTFS, ext4) is filtered out here
+     rather than silently failing to write to it later.
+   - **Format an external drive from scratch** - option 2 at the prompt, erasing it as
+     APFS. Requires typing `YES` in capitals first, the same confirmation pattern as
+     `install.sh`'s own disk wipe.
 3. Optionally set up a network share - the password is stored in the macOS Keychain,
    not in a file.
 4. Ollama and Open WebUI come up via Docker Desktop.
@@ -172,12 +179,22 @@ the compose file with both fixes.
 
 ## Ending a session
 
-Run `disconnect.ps1` (Windows) or `eject.sh` (native Linux) before physically removing
-the drive - see [Quick start](../README.md#quick-start) above. It stops the stack,
-stops the daemons whose data-root lives on the drive, unmounts, locks the drive again
-if it's encrypted, and releases the raw disk back to Windows. It refuses to release the
-disk if any of that fails, rather than reporting success and leaving the filesystem
-mounted underneath a physically-removed drive.
+Run `disconnect.ps1` (Windows), `eject.sh` (native Linux), or `bash mac-eject.sh`
+(macOS) before physically removing the drive - see
+[Quick start](../README.md#quick-start) above. It stops the stack, stops the daemons
+whose data-root lives on the drive, unmounts, locks the drive again if it's encrypted,
+and releases the raw disk back to Windows. It refuses to release the disk if any of
+that fails, rather than reporting success and leaving the filesystem mounted underneath
+a physically-removed drive.
+
+`mac-eject.sh` works differently, because macOS has no raw disk to release and no
+daemon data-root living on the drive - Docker Desktop's own Linux VM runs elsewhere and
+only bind-mounts paths from the drive into containers. It searches every external
+volume for the `portable-ai/stack` folder rather than needing a path typed in (same
+reasoning as `eject.sh`'s label lookup - ask the drive, not the host), stops only the
+containers this rig's own `docker-compose.yml` defines by reading its service names
+directly rather than guessing, then calls `diskutil eject`. If eject fails, it lists
+what's still holding the volume open via `lsof` rather than failing silently.
 
 Docker Desktop, if present on the machine, does not need to be stopped for this to
 work: the rig runs its own Docker Engine inside the WSL distro, and `eject.sh` blocks

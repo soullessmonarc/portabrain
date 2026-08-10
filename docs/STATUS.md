@@ -257,3 +257,43 @@ PII/secrets sweep Phase 12 covered.
   binding fix above the one finding that mattered), no `eval`/`curl | bash`/unsafe
   deserialization anywhere in the codebase, and the CI workflow already had correctly
   scoped `permissions: contents: read` with no secrets in use.
+
+## Phase 14 - real-hardware failure, and the repo's first outside contribution (2026-08-10)
+
+- **The stale-mapping cleanup logic corrupted a live rig.** During a routine re-run of
+  `install.sh` against a drive that was already unlocked, mounted, and actively running
+  a full stack, the direct-IO liveness probe gave a false negative against the genuinely
+  live mapping - and the fallback then ran `dmsetup remove -f` against it. Against a
+  busy device that doesn't fail cleanly: it silently swaps the live table for an error
+  target, which reads as an ordinary command failure but turns every subsequent
+  read/write on the real, mounted filesystem into an I/O error. Confirmed via `dmesg`:
+  buffer I/O errors, the ext4 journal aborting, and the filesystem force-remounting
+  read-only mid-session - Docker's data-root and Open WebUI's own database were both on
+  it, so both broke. Recovered by stopping Docker, cleanly unmounting everything, and
+  `luksClose`-ing the now-harmless error-target mapping; the underlying physical
+  partition itself was never written to after the table swap, so nothing was lost - the
+  drive was rebuilt fresh anyway since it held nothing worth preserving.
+- Fixed in `install.sh` and `connect.sh`: before attempting any teardown, actual usage
+  (mounted, or a nonzero `dmsetup` open count) is now checked independently of the
+  liveness probe, and the mapping is left alone entirely - loud error, not a silent
+  guess - if either says it's genuinely in use. The final `dmsetup remove` fallback also
+  dropped `-f`, since by that point usage has already been ruled out.
+- **The repo's first pull request from someone else** (CMDRPhaedra, `#1`,
+  `macos-external-drive-only`): `install-macos-arm.sh`'s drive picker only ever listed
+  every `/Volumes` entry, including the internal boot disk, and only checked
+  `Device Location=External` - a drive plugged in from Windows/Linux (NTFS, ext4) would
+  pass that check and then silently fail to write. Now filters to external volumes only,
+  refuses an internal disk outright (matching the Windows/Linux picker's own refusal),
+  checks the filesystem is actually writable (APFS/HFS+/ExFAT/FAT), and offers a second
+  path to format an external physical disk from scratch - typed `YES` confirmation,
+  mirroring `install.sh`'s own pattern. Correctly avoids `mapfile`/`readarray` throughout
+  (macOS ships bash 3.2, not bash 4+).
+- Same PR added **`mac-eject.sh`** - macOS had no scripted way to stop the stack before
+  unplugging the drive at all. Finds the rig by searching external volumes for the
+  `portable-ai/stack` folder (same reasoning as `eject.sh`'s label lookup on Linux - ask
+  the drive, not the host), stops only the containers this rig's own
+  `docker-compose.yml` defines - read via `docker compose config --services`, passed to
+  `stop` by name - so it can never touch other Docker Compose projects or standalone
+  containers a user has running, then ejects. Reviewed in full before merging: syntax
+  clean, CI green on the PR branch and after merge, and the logic holds up against a
+  careful read - no shortcuts taken just because it came from outside.

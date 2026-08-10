@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.5.0)
+## Current status (v0.6.0)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
@@ -56,6 +56,18 @@ the machine is just a host.
   `/etc/fstab`-injection fix for SMB share names containing spaces, and GitHub Actions
   pinned to commit SHAs instead of mutable tags. See
   [`SECURITY.md`](../SECURITY.md) for the full writeup.
+- **A real-hardware failure found and fixed a data-integrity bug.** The stale-mapping
+  liveness check gave a false negative against a genuinely live, actively-mounted LUKS
+  mapping, and the cleanup fallback then force-removed it - which silently swapped the
+  live table for an error target and aborted the mounted filesystem's ext4 journal
+  mid-session. Both `install.sh` and `connect.sh` now verify actual usage independently
+  of the liveness probe and refuse to touch a mapping that's genuinely in use, rather
+  than trusting a probe that has already been proven wrong once.
+- **The repo's first outside contribution:** an external-drive-only picker for
+  `install-macos-arm.sh` (an internal disk is now refused outright, matching the
+  Windows/Linux picker), a path to format an external drive from scratch when it isn't
+  already in a format macOS can write to, and `mac-eject.sh` - macOS previously had no
+  scripted way to stop the stack before unplugging the drive at all.
 - **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
   share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. ComfyUI
   (image/video generation) is **not yet wired up** - the Linux/Windows setup uses a

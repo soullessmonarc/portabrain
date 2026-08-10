@@ -419,6 +419,25 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
     printf '%s' "${v%%/*}"              # keep the first segment only
   }
 
+  # /etc/fstab fields are whitespace-delimited. A share name or hostname
+  # containing a literal space (a real, legal SMB share name - "My Documents"
+  # is not unusual) would otherwise split into extra fields and either fail
+  # to mount or, worse, get misparsed into something that changes what mount
+  # options apply. util-linux's fstab parser recognises octal escapes for
+  # exactly this reason - \040 for space, \011 for tab, \043 for '#' (a
+  # comment marker if unescaped) - so encode with those rather than reject
+  # otherwise-valid share names. Only used when building the fstab line; the
+  # live `mount -t cifs` call below passes SMB_HOST/SMB_SHARE as proper argv
+  # elements already and needs no such encoding.
+  fstab_escape() {
+    local v="$1"
+    v="${v//\\/\\134}"
+    v="${v// /\\040}"
+    v="${v//$'\t'/\\011}"
+    v="${v//#/\\043}"
+    printf '%s' "$v"
+  }
+
   echo "Just the server itself below - no leading backslashes, no share name."
   SMB_HOST=""
   while [ -z "$SMB_HOST" ]; do
@@ -479,8 +498,10 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
     FSTAB_OPTS="${SMB_OPTS},_netdev,nofail,noauto,x-systemd.mount-timeout=10"
   fi
 
-  FSTAB_LINE="//${SMB_HOST}/${SMB_SHARE} ${SMB_MOUNT} cifs ${FSTAB_OPTS} 0 0"
-  if ! grep -qF "//${SMB_HOST}/${SMB_SHARE} ${SMB_MOUNT} " /etc/fstab 2>/dev/null; then
+  FSTAB_DEVICE="//$(fstab_escape "$SMB_HOST")/$(fstab_escape "$SMB_SHARE")"
+  FSTAB_MOUNTPOINT="$(fstab_escape "$SMB_MOUNT")"
+  FSTAB_LINE="${FSTAB_DEVICE} ${FSTAB_MOUNTPOINT} cifs ${FSTAB_OPTS} 0 0"
+  if ! grep -qF "${FSTAB_DEVICE} ${FSTAB_MOUNTPOINT} " /etc/fstab 2>/dev/null; then
     echo "$FSTAB_LINE" >> /etc/fstab
   fi
 
@@ -845,7 +866,14 @@ services:
     image: $OPENWEBUI_IMAGE
     container_name: openwebui
     restart: unless-stopped
-    ports: ["8080:8080"]
+    # Bound to loopback only, deliberately. A bare "8080:8080" publishes to
+    # 0.0.0.0 - every device on whatever network this machine is connected to
+    # - and this stack runs uncensored models with no content filter. This
+    # project is meant to be plugged into different machines, some of which
+    # may be on networks you don't fully trust. To reach it from another
+    # device on your own LAN on purpose, change this to "8080:8080" (or
+    # "<your-LAN-IP>:8080:8080") yourself - see SECURITY.md.
+    ports: ["127.0.0.1:8080:8080"]
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - ENABLE_IMAGE_GENERATION=true
@@ -1096,8 +1124,18 @@ LTX_CKPT_NAME="ltxv-2b-0.9.8-distilled-fp8.safetensors"
 LTX_CLIP_NAME="t5xxl_fp8_e4m3fn.safetensors"
 LTX_CKPT_URL_DEFAULT="https://huggingface.co/Lightricks/LTX-Video/resolve/main/${LTX_CKPT_NAME}"
 LTX_CLIP_URL_DEFAULT="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/${LTX_CLIP_NAME}"
+# SHA256 of the known-good file, checked against each download below (see
+# fetch_weight). Pulled straight from the host's own metadata - HuggingFace's
+# LFS object hash for the three files here, CivitAI's file-hash API for
+# Juggernaut - not computed locally or taken on faith from a webpage. Only
+# verified against the DEFAULT url; a pasted custom URL skips the check,
+# since a hash pinned to one specific file can't validate a substitute.
+LTX_CKPT_SHA256="d6d8fa8ed3a98346787c2503ac80fb5d7cebcf80e356b79a2ba361fbadf97e15"
+LTX_CLIP_SHA256="7d330da4816157540d6bb7838bf63a0f02f573fc48ca4d8de34bb0cbfd514f09"
 ANIMAGINE_CKPT_NAME="animagine-xl-3.1.safetensors"
 JUGGERNAUT_CKPT_NAME="juggernautXL_v9.safetensors"
+ANIMAGINE_CKPT_SHA256="e3c47aedb06418c6c331443cd89f2b3b3b34b7ed2102a3d4c4408a8d35aad6b0"
+JUGGERNAUT_CKPT_SHA256="c9e3e68f89b8e38689e1097d4be4573cf308de4e3fd044c64ca697bdb4aa8bca"
 # Resolved and verified live (HTTP 206, correct filename) via civitai.com's
 # direct download API - civitai.com/models/133005.
 JUGGERNAUT_CKPT_URL_DEFAULT="https://civitai.com/api/download/models/348913?fileId=277777"
@@ -1156,9 +1194,15 @@ PYEOF
 # HuggingFace-hosted LTX weights, which don't need this): when set, a failed
 # download against the unmodified default URL triggers exactly one
 # same-version relocation lookup before falling through to the manual prompt.
+#
+# expected_sha256 is also optional, and is only ever checked against a
+# download that used the URL this function was given (default, or the same
+# file re-resolved to a new CivitAI URL) - never against a URL the user
+# pasted in themselves, since the whole point of that override is to fetch a
+# different or self-hosted copy this script has no hash for.
 fetch_weight() {
   local dest_dir="$1" filename="$2" default_url="$3" label="$4"
-  local civitai_model_id="${5:-}" civitai_version_name="${6:-}"
+  local civitai_model_id="${5:-}" civitai_version_name="${6:-}" expected_sha256="${7:-}"
   local dest="$dest_dir/$filename"
 
   if [ -s "$dest" ]; then
@@ -1169,6 +1213,7 @@ fetch_weight() {
   mkdir -p "$dest_dir"
   local url="$default_url"
   local healed=0
+  local user_supplied_url=0
   local attempt
   for attempt in 1 2 3; do
     echo ""
@@ -1178,12 +1223,26 @@ fetch_weight() {
     case "$REPLY_URL" in
       skip|SKIP) echo "  Skipped - this file will not be present until added manually."; return 1 ;;
       "") : ;;
-      *) url="$REPLY_URL" ;;
+      *) url="$REPLY_URL"; user_supplied_url=1 ;;
     esac
 
     echo "  Downloading..."
     if curl -fL --retry 3 --retry-delay 2 -o "$dest.part" "$url"; then
       if [ -s "$dest.part" ]; then
+        if [ -n "$expected_sha256" ] && [ "$user_supplied_url" -eq 0 ]; then
+          echo "  Verifying checksum..."
+          local actual_sha256
+          actual_sha256="$(sha256sum "$dest.part" | awk '{print tolower($1)}')"
+          if [ "$actual_sha256" != "$(printf '%s' "$expected_sha256" | tr 'A-Z' 'a-z')" ]; then
+            echo "  Checksum mismatch - the downloaded file does not match the known-good hash" >&2
+            echo "  for this checkpoint (expected $expected_sha256, got $actual_sha256)." >&2
+            echo "  Not trusting this download - discarding it." >&2
+            rm -f "$dest.part"
+            echo "  (attempt $attempt of 3)" >&2
+            continue
+          fi
+          echo "  Checksum OK."
+        fi
         mv "$dest.part" "$dest"
         echo "  Saved to $dest ($(du -h "$dest" 2>/dev/null | cut -f1))"
         return 0
@@ -1225,9 +1284,9 @@ echo "skipped with 'skip' - one is enough to start."
 # descriptions - so it is offered as the stylised option rather than the
 # default an unfamiliar user gets first.
 fetch_weight "$COMFY_MODELS/checkpoints" "$JUGGERNAUT_CKPT_NAME" "$JUGGERNAUT_CKPT_URL_DEFAULT" \
-  "Juggernaut XL v9 checkpoint, photoreal (~6.6GB)" "133005" "V9 + RunDiffusionPhoto 2" || true
+  "Juggernaut XL v9 checkpoint, photoreal (~6.6GB)" "133005" "V9 + RunDiffusionPhoto 2" "$JUGGERNAUT_CKPT_SHA256" || true
 fetch_weight "$COMFY_MODELS/checkpoints" "$ANIMAGINE_CKPT_NAME" "$ANIMAGINE_CKPT_URL_DEFAULT" \
-  "Animagine XL 3.1 checkpoint, stylised/anime (~6.9GB)" || true
+  "Animagine XL 3.1 checkpoint, stylised/anime (~6.9GB)" "" "" "$ANIMAGINE_CKPT_SHA256" || true
 
 # Readiness is decided by which file is actually on disk afterwards, NOT by
 # either fetch_weight's exit status. Skipping the first checkpoint but taking
@@ -1262,8 +1321,8 @@ echo "== Video generation (LTX) =="
 echo "Two model files are needed. They are stored on the drive, so this is a"
 echo "one-time download that travels with it."
 VIDEO_READY=1
-fetch_weight "$COMFY_MODELS/checkpoints" "$LTX_CKPT_NAME" "$LTX_CKPT_URL_DEFAULT" "LTX-Video checkpoint (~4GB)" || VIDEO_READY=0
-fetch_weight "$COMFY_MODELS/clip" "$LTX_CLIP_NAME" "$LTX_CLIP_URL_DEFAULT" "T5-XXL text encoder (~5GB)" || VIDEO_READY=0
+fetch_weight "$COMFY_MODELS/checkpoints" "$LTX_CKPT_NAME" "$LTX_CKPT_URL_DEFAULT" "LTX-Video checkpoint (~4GB)" "" "" "$LTX_CKPT_SHA256" || VIDEO_READY=0
+fetch_weight "$COMFY_MODELS/clip" "$LTX_CLIP_NAME" "$LTX_CLIP_URL_DEFAULT" "T5-XXL text encoder (~5GB)" "" "" "$LTX_CLIP_SHA256" || VIDEO_READY=0
 
 echo ""
 echo "== Installing the 'Generate Video (LTX)' action in Open WebUI =="

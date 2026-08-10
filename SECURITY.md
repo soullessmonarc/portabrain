@@ -17,6 +17,33 @@ mount the filesystem directly and never run the script at all. A passphrase is
 only worth anything when it is the decryption key, which is why the option below
 is real encryption rather than a gate.
 
+## Network exposure
+
+This is a separate threat model from the one above, and worth being just as
+blunt about: this project runs uncensored models with no content filter, and
+is meant to be plugged into different machines - some of which may be on
+networks you don't fully trust (a shared office, a hotel, someone else's
+home).
+
+`docker-compose.yml` publishes Open WebUI on `127.0.0.1:8080` - loopback
+only, reachable from the host machine itself and nothing else. This is a
+deliberate default, not an oversight: a bare `8080:8080` (Docker's own
+default publishing behaviour) binds to `0.0.0.0`, which is every device on
+whatever network the host is connected to, and `ENABLE_SIGNUP` is left at
+Open WebUI's own default (`true`) with `DEFAULT_USER_ROLE` defaulting to
+`pending` - meaning a stranger on the network couldn't get in without
+approval, but could still discover the service is running and register a
+pending account.
+
+If you want to reach Open WebUI from another device on your own LAN on
+purpose - a phone or tablet while the rig runs on a PC, say - that's a
+one-line edit to `docker-compose.yml` on the drive itself: change
+`"127.0.0.1:8080:8080"` to `"8080:8080"` (all interfaces) or
+`"<your-LAN-IP>:8080:8080"` (that interface only), then
+`docker compose up -d openwebui` to apply it. Ollama and ComfyUI are not
+published to the host at all, by design - both are reachable only from
+Open WebUI's own container, over the internal Docker network.
+
 ## At-rest encryption (optional, offered at install)
 
 `install.sh` offers to put the drive inside a **LUKS2 container**. If you accept:
@@ -80,6 +107,31 @@ The password has to be stored in plaintext at all: `mount.cifs` accepts no hashe
 or wrapped form. Mode 600, root-owned, and removed on eject is the best available
 position, not an ideal one.
 
+The server address and share name you type are also encoded (not rejected)
+before they're written into `/etc/fstab`: that file's fields are
+whitespace-delimited, so a share name containing a literal space - a real,
+legal SMB share name, not an edge case - would otherwise split into extra
+fields it was never meant to have. `install.sh` applies the standard
+`fstab`(5) octal escapes (`\040` for space, and so on) rather than reject
+otherwise-valid input.
+
+## Model weight integrity
+
+Every SDXL/LTX checkpoint `install.sh` can download is verified against a
+SHA256 pinned in the script itself - pulled directly from the hosting
+platform's own metadata (Hugging Face's LFS object hash, CivitAI's file-hash
+API), not computed locally or taken on faith from a webpage. A download that
+doesn't match is discarded and retried, never trusted. This only covers the
+*default* URL for each file: if you paste in a different or self-hosted URL
+at the prompt, that check is skipped, since a hash pinned to one specific
+file can't validate a substitute you've deliberately chosen instead.
+
+Every weight file this project fetches is `.safetensors` - tensor data only,
+with no pickle-based deserialization - so even without the hash check, the
+class of attack where a malicious checkpoint executes code on load doesn't
+apply here the way it can with legacy `.ckpt` files elsewhere in this
+ecosystem.
+
 ## What this installer does *not* do
 
 - No telemetry, no phone-home. The only outbound network calls it makes are: pulling
@@ -91,5 +143,5 @@ position, not an ideal one.
 
 ## Reporting a problem
 
-This is a private, single-maintainer repo. If you find a credential-handling or other
-security issue, open an issue directly rather than a public disclosure.
+This is a single-maintainer, personal-project repo. If you find a credential-handling
+or other security issue, open an issue directly rather than a public disclosure.

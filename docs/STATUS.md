@@ -204,3 +204,56 @@ landed.
   installer was ever run before this change and a drive already has
   `ponyDiffusionV6XL.safetensors` on it, that restriction still applies to it regardless
   of what this project currently offers.
+- A second, separate history rewrite: three commit messages named a personal development
+  rig and described its custom uncensored prompt in specific terms - not PII, but exactly
+  the kind of operator-specific detail the public/personal split (`system_prompt.txt`
+  being gitignored, etc.) was meant to keep out of the shared repo. Rewritten via a
+  `git filter-repo --commit-callback` pass, technical substance kept intact. Cost two
+  false starts to get right: the callback silently no-op'd the first time because
+  `git-filter-repo` runs under a Windows-native Python that doesn't resolve `/c/...`-style
+  paths, so a file-path argument got treated as literal (harmless, no-op) inline code
+  instead of a file to read; the second attempt matched most commits but not the two
+  target ones, traced to `git-filter-repo` textually splicing callback code into a
+  generated function body - which corrupts multi-line string literals in the callback,
+  since indentation added by the splice becomes literal string content. Fixed by moving
+  the old/new message text to side-car files read at runtime instead of embedding them
+  as literals, verified byte-for-byte against the real commit content before rerunning.
+
+## Phase 13 - security audit (2026-08-10)
+
+A full audit covering credential handling, injection surfaces, download integrity,
+container hardening, network exposure, and CI supply-chain hygiene - not just the
+PII/secrets sweep Phase 12 covered.
+
+- **Open WebUI was published on `0.0.0.0:8080`** - Docker's default publishing
+  behaviour for a bare `"8080:8080"`, reachable from every device on whatever network
+  the host is connected to, not just the host itself. `ENABLE_SIGNUP` was also left at
+  Open WebUI's own default (`true`; new accounts land in `pending` pending admin
+  approval, verified against Open WebUI's own docs rather than assumed). Given this
+  project runs uncensored models with no content filter and is meant to be plugged into
+  different machines - some on networks you don't fully trust - this was a real gap,
+  and `SECURITY.md`'s threat model didn't mention it at all; it only covered physical
+  drive theft. Now bound to `127.0.0.1:8080` by default, with LAN exposure documented
+  as a deliberate one-line opt-in in `SECURITY.md`.
+- **Model weight downloads had no integrity verification** beyond bare HTTPS transport
+  trust. `fetch_weight()` now checks a SHA256 pinned per file - pulled from Hugging
+  Face's own LFS object-hash metadata and CivitAI's file-hash API directly, not
+  computed locally or copied from a webpage - and discards/retries on mismatch. Only
+  applied to the default URL for each file; a pasted custom URL skips the check, since
+  a hash pinned to one specific file can't validate a deliberate substitute. Mitigating
+  factor noted in `SECURITY.md`: every weight this project fetches is `.safetensors`,
+  which carries no pickle-based code-execution risk even without the hash.
+- **SMB share input could inject extra `/etc/fstab` fields.** A share name or host
+  containing a literal space - a real, legal SMB share name, not an edge case - would
+  split into extra whitespace-delimited fstab fields. Fixed by applying `fstab`(5)'s own
+  octal escapes (`\040` for space, etc.) when building the fstab line, rather than
+  rejecting otherwise-valid share names.
+- **GitHub Actions pinned to commit SHAs** (`actions/checkout`, `actions/setup-python`)
+  instead of mutable version tags, each with the resolved version as a trailing comment.
+- Everything else in the audit held up: LUKS passphrase piped via stdin at every call
+  site (never touches argv), containers run `cap_drop: ALL` plus a minimal explicit
+  `cap_add` with `no-new-privileges:true` and no Docker socket mount, Ollama/ComfyUI
+  are not published to the host at all (only Open WebUI was, which is what made the
+  binding fix above the one finding that mattered), no `eval`/`curl | bash`/unsafe
+  deserialization anywhere in the codebase, and the CI workflow already had correctly
+  scoped `permissions: contents: read` with no secrets in use.

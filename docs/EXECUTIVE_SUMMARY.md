@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.4.1)
+## Current status (v0.5.0)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect
@@ -47,6 +47,15 @@ the machine is just a host.
   verified under plain CreativeML Open RAIL++-M with no such restriction. See
   [`NOTICE.md`](../NOTICE.md) for the full comparison and a standing note for anyone
   who already downloaded Pony under an earlier version.
+- **A full security audit landed a real fix.** Open WebUI was published on `0.0.0.0:8080`
+  by default - reachable from an entire local network, not just the host machine, which
+  matters for a stack that runs uncensored models with no content filter and gets plugged
+  into different machines. Now bound to `127.0.0.1:8080`, with LAN exposure available as
+  a deliberate one-line opt-in. Also added: SHA256 verification of every downloaded model
+  checkpoint against a hash pulled from the hosting platform's own metadata, an
+  `/etc/fstab`-injection fix for SMB share names containing spaces, and GitHub Actions
+  pinned to commit SHAs instead of mutable tags. See
+  [`SECURITY.md`](../SECURITY.md) for the full writeup.
 - **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
   share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. ComfyUI
   (image/video generation) is **not yet wired up** - the Linux/Windows setup uses a

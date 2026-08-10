@@ -149,6 +149,15 @@ macOS cannot open LUKS volumes. There is also no recovery if you forget the pass
 models can be re-downloaded, chats and generated output cannot. Unencrypted drives stay
 fully supported. See [`SECURITY.md`](SECURITY.md).
 
+## Network exposure
+
+Open WebUI is bound to `127.0.0.1:8080` by default - reachable from the host machine
+only, not the rest of your network. This project runs uncensored models with no content
+filter and is meant to be plugged into different machines, some of which may be on
+networks you don't fully trust, so that's the deliberate default rather than Docker's
+usual all-interfaces publishing. See [`SECURITY.md`](SECURITY.md#network-exposure) for
+how to open it up to your own LAN on purpose if you want to.
+
 ## Two hard rules for this repo
 
 **The installer can reformat whatever disk you choose.** It always asks you to pick a

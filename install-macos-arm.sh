@@ -16,8 +16,10 @@
 #     ComfyUI would be CPU-only, defeating the point. Open WebUI stays in
 #     Docker (it doesn't need the GPU) and reaches native ComfyUI over
 #     `http://host.docker.internal:8188`, a Docker Desktop for Mac/Windows
-#     built-in. Implemented per the design in mac-backlog.md, but NOT YET
-#     VERIFIED on real Apple Silicon hardware - tracked in issue #3.
+#     built-in. Confirmed working end-to-end on real Apple Silicon hardware
+#     (issue #3): a real image generated through Open WebUI's own endpoint,
+#     genuine Metal/MPS acceleration ("device":"mps", model loaded directly
+#     to GPU), not a silent CPU fallback.
 #   - Video generation (LTX-Video) is still not set up on macOS - explicitly
 #     out of scope for the ComfyUI work above, see mac-backlog.md.
 #
@@ -656,9 +658,18 @@ EOF
       launchctl unload "$HOME/Library/LaunchAgents/com.portableai.comfyui.plist" 2>/dev/null || true
       launchctl load "$HOME/Library/LaunchAgents/com.portableai.comfyui.plist"
 
-      echo "== Waiting for ComfyUI to come up (up to 2 minutes) =="
+      # 5 minutes, not 2: measured on real hardware (issue #3) that a genuine
+      # cold start - importing torch, ComfyUI-Manager's own startup registry
+      # fetch, reading a multi-GB checkpoint's venv/site-packages off the
+      # external drive - can take 30-60s just for the torch import alone,
+      # and 2 minutes end-to-end was observed cutting it close to a real
+      # timeout. A timeout here isn't a failure needing intervention: the
+      # ComfyUI process itself is still starting in the background and
+      # re-running this script picks the wiring step up cleanly once it is.
+      echo "== Waiting for ComfyUI to come up (up to 5 minutes on a cold start - importing"
+      echo "   torch and reading a multi-GB checkpoint off an external drive takes a while) =="
       COMFYUI_UP=0
-      for _ in $(seq 1 24); do
+      for _ in $(seq 1 60); do
         if curl -sf --max-time 5 http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
           COMFYUI_UP=1
           break
@@ -676,9 +687,11 @@ EOF
           || echo "warning: image generation could not be configured - see the message above." >&2
         COMFYUI_READY=1
       else
-        echo "WARNING: ComfyUI didn't come up within 2 minutes - check /tmp/portableai-comfyui.log." >&2
-        echo "         Image generation was not wired up. Once it's running, re-run this script" >&2
-        echo "         or run setup_image_config.py yourself (see its own comments)." >&2
+        echo "WARNING: ComfyUI didn't come up within 5 minutes. This is not necessarily a" >&2
+        echo "         real failure - it may still be starting. Check /tmp/portableai-comfyui.log;" >&2
+        echo "         if it's still initialising there, just wait and re-run this script once" >&2
+        echo "         it's done - image generation will get wired up then. Image generation was" >&2
+        echo "         not configured on this run." >&2
       fi
     else
       echo ""

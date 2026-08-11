@@ -68,15 +68,20 @@ the machine is just a host.
   Windows/Linux picker), a path to format an external drive from scratch when it isn't
   already in a format macOS can write to, and `mac-eject.sh` - macOS previously had no
   scripted way to stop the stack before unplugging the drive at all.
-- **macOS (Apple Silicon):** Ollama and Open WebUI work via Docker Desktop; the SMB
-  share, Keychain-backed credentials, and launchd-based heartbeat/sync all work. Image
-  generation now works too - ComfyUI runs natively on the host (Docker Desktop for Mac
-  has no Metal GPU passthrough to containers, so a containerised ComfyUI would be
-  CPU-only), reachable from Open WebUI's Docker container over
-  `http://host.docker.internal:8188`. **Not yet verified on real Apple Silicon
-  hardware** - tracked in
-  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). Video generation
-  (LTX-Video) remains out of scope on macOS - see [`mac-backlog.md`](../mac-backlog.md).
+- **macOS (Apple Silicon): image generation confirmed working on real hardware,
+  including genuine Metal acceleration.** Ollama and Open WebUI work via Docker
+  Desktop; the SMB share, Keychain-backed credentials, and launchd-based heartbeat/sync
+  all work. ComfyUI runs natively on the host - not in Docker, since Docker Desktop for
+  Mac has no Metal GPU passthrough to containers - reachable from Open WebUI's Docker
+  container over `http://host.docker.internal:8188`. Tested end-to-end on an M-series
+  Mac ([issue #3](https://github.com/soullessmonarc/portabrain/issues/3)): a real image
+  was generated through Open WebUI's own API, and `/system_stats` confirms `"device":
+  "mps"` with the diffusion model loaded directly to GPU (~2.0 it/s SDXL sampling) - not
+  a silent CPU fallback. Two real bugs that testing found are fixed (Docker Desktop's
+  own VM process blocking eject regardless of container state; a too-tight 2-minute
+  cold-start timeout, now 5 minutes), though those two specific fixes are themselves
+  still owed a real-hardware re-check. Video generation (LTX-Video) remains out of
+  scope on macOS - see [`mac-backlog.md`](../mac-backlog.md).
 - **Weight downloads are now resumable.** Caught live during a real rebuild: three
   separate multi-GB downloads hit an HTTP/2 stream-reset error partway through, and
   every retry restarted from 0%. `curl -C -` now resumes from where a failed attempt

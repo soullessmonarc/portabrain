@@ -86,6 +86,17 @@ and re-verified.
   (which was the actual cause of a "reset to factory defaults" prompt on next launch,
   not a Docker bug), and left alone entirely on a machine where it has no WSL
   integration with the rig's distro - detected from its own settings, not assumed.
+- **macOS ComfyUI, confirmed on real Apple Silicon** (M-series Mac, macOS 26.6.1,
+  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3)): runs natively on
+  the host rather than in Docker (Docker Desktop for Mac has no Metal GPU passthrough
+  to containers), reachable from Open WebUI's own Docker container over
+  `http://host.docker.internal:8188`. Metal/MPS acceleration confirmed genuine, not a
+  silent CPU fallback - `/system_stats` reports `"device":"mps"`, the diffusion model
+  loads directly to GPU, SDXL sampling ran at ~2.0 it/s - and a real image was produced
+  through Open WebUI's own generation endpoint, not just a config check. Two real bugs
+  the same testing found are fixed (Docker Desktop's own VM process blocking eject
+  regardless of container state; a too-tight 2-minute cold-start timeout), though those
+  two specific fixes still owe a real-hardware re-check of their own.
 
 ## Remaining / not yet done
 
@@ -98,14 +109,9 @@ and re-verified.
   only (shellcheck, PSScriptAnalyzer, python syntax). Attaching a physical disk to WSL2
   and reformatting it is not reproducible on a hosted runner, and a green tick that
   didn't exercise any of that would be worse than no tick.
-- **macOS ComfyUI support.** Implemented - runs natively on the host rather than in
-  Docker (Docker Desktop for Mac has no Metal GPU passthrough to containers, so a
-  containerised ComfyUI would be CPU-only), reachable from Open WebUI's own Docker
-  container over `http://host.docker.internal:8188`. **Not yet verified on real Apple
-  Silicon hardware** - tracked in
-  [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). Video generation
-  (LTX-Video) on macOS remains out of scope - see `mac-backlog.md`. Note also that
-  choosing encryption rules macOS out entirely, since it cannot open LUKS volumes.
+- **Video generation (LTX-Video) on macOS remains out of scope** - see `mac-backlog.md`.
+  Note also that choosing encryption rules macOS out entirely, since it cannot open
+  LUKS volumes.
 - **Windows 10 is untested.** Mirrored networking needs Windows 11 22H2+, so a Win10
   host falls back to NAT mode. That should be *better* for `localhost` access (NAT mode's
   loopback forwarding bypasses the firewall entirely), but it has not been confirmed, and

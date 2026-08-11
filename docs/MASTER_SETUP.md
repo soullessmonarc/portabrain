@@ -181,11 +181,17 @@ the compose file with both fixes.
    venv, and offers the same two checkpoints (and the same checksums) as the
    Linux/Windows installer.
 
-> [!WARNING]
-> **The native ComfyUI setup above is implemented but not yet verified on real Apple
-> Silicon hardware** - this project's own drives were all built and tested on
-> Linux/Windows. If you try it, please report back (working or not) on
-> [issue #3](https://github.com/soullessmonarc/portabrain/issues/3).
+> [!NOTE]
+> **The native ComfyUI setup above has been tested end-to-end on real Apple Silicon
+> hardware** (M-series Mac, [issue #3](https://github.com/soullessmonarc/portabrain/issues/3)):
+> a real image was generated through Open WebUI's own endpoint, and Metal/MPS
+> acceleration was confirmed genuine (`"device":"mps"`, the diffusion model loaded
+> directly to GPU) rather than a silent CPU fallback. That same testing found two real
+> bugs, both now fixed: Docker Desktop's own VM process blocking `mac-eject.sh` from
+> ejecting regardless of container state, and a 2-minute cold-start timeout that was
+> measured too tight (now 5 minutes). Those two specific fixes haven't themselves been
+> re-verified on real hardware yet - if you hit either issue again, please report back
+> on the same thread.
 
 **Known gap:** video generation (LTX-Video) is not part of the macOS path yet - see
 [`mac-backlog.md`](../mac-backlog.md) and [`EXECUTIVE_SUMMARY.md`](EXECUTIVE_SUMMARY.md).

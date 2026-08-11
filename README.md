@@ -54,7 +54,10 @@ that the rig works.
 > encryption format/unlock/lock cycle; a reconnect reusing what is already on the drive
 > rather than re-downloading it; ComfyUI running; image generation producing a real
 > render through Open WebUI's own config path; and video generation producing an actual
-> clip, not just the button installing.
+> clip, not just the button installing. On macOS (Apple Silicon): native ComfyUI
+> producing a real image through Open WebUI's own generation endpoint, with genuine
+> Metal/MPS acceleration confirmed (not a silent CPU fallback) - see
+> [issue #3](https://github.com/soullessmonarc/portabrain/issues/3).
 >
 > **What is not:** portability itself. Everything was proven on *one* machine - moving
 > the drive to a different machine, which is the entire point, is still untested. See
@@ -88,7 +91,7 @@ or auto-detected from the hardware in front of it.
 | `setup_register_models.py` | Registers the chat/coder models in Open WebUI under your chosen name, with the system prompt and image-generation capability wired up. Picks up an optional `system_prompt.txt` (gitignored - not shipped) if you drop one next to these scripts, so a personalised rig can carry its own personality without forking this file. |
 | `video_gen_action.py` | Open WebUI Action: a "Generate Video (LTX)" button under each reply, driving ComfyUI's LTX-Video pipeline. Animates a just-generated or attached image if there is one, otherwise generates from the reply text. |
 | `setup_video_action.py` | Installs and activates that Action, and keeps it up to date on re-runs. |
-| `install-macos-arm.sh` | macOS Apple Silicon entry point: Ollama + Open WebUI via Docker Desktop, SMB share via the macOS Keychain, launchd-based heartbeat/sync. External-drive-only picker (an internal disk is refused outright), with a second path to format one from scratch as APFS if it isn't already in a format macOS can write to. Also sets up image generation - ComfyUI running natively on the host (no Metal GPU passthrough to Docker containers on Mac), reachable from Open WebUI via `host.docker.internal`. **Not yet verified on real Apple Silicon hardware** - see [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). |
+| `install-macos-arm.sh` | macOS Apple Silicon entry point: Ollama + Open WebUI via Docker Desktop, SMB share via the macOS Keychain, launchd-based heartbeat/sync. External-drive-only picker (an internal disk is refused outright), with a second path to format one from scratch as APFS if it isn't already in a format macOS can write to. Also sets up image generation - ComfyUI running natively on the host (no Metal GPU passthrough to Docker containers on Mac), reachable from Open WebUI via `host.docker.internal`. **Confirmed working on real Apple Silicon hardware**, including genuine Metal acceleration - see [issue #3](https://github.com/soullessmonarc/portabrain/issues/3). |
 | `mac-eject.sh` | macOS clean shutdown: stops only this rig's own containers (read by name from its `docker-compose.yml`, never a guess) and the native ComfyUI `launchd` service if it's set up, then `diskutil eject`s the volume. Finds the rig by searching external volumes rather than needing a path typed in. |
 | `share-watcher.ps1` | Windows-only: one-shot check that fires a native toast when the configured network share drops or reconnects mid-session. |
 | `install-share-watcher.ps1` | Registers `share-watcher.ps1` as a Windows Scheduled Task (every 2 minutes, while logged in). |

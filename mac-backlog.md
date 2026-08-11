@@ -5,12 +5,17 @@ not yet implemented.
 
 ## Native ComfyUI image generation, alongside Ollama
 
-**Implemented in `install-macos-arm.sh`, following the design below - but not
-yet verified on real Apple Silicon hardware.** Tracked in
-[issue #3](https://github.com/soullessmonarc/portabrain/issues/3); if you
-have a Mac, testing it and reporting back there is exactly what's needed
-next. The design sketch is kept below as-built documentation, not as a plan
-still to be written.
+**Implemented in `install-macos-arm.sh`, and confirmed working end-to-end on
+real Apple Silicon hardware** - see
+[issue #3](https://github.com/soullessmonarc/portabrain/issues/3): a real
+image generated through Open WebUI's own endpoint, and genuine Metal/MPS
+acceleration confirmed (`"device":"mps"`, the diffusion model loaded
+directly to GPU), not a silent CPU fallback. That same real-hardware testing
+found two bugs, both now fixed: Docker Desktop's own VM process blocking
+`mac-eject.sh` regardless of container state, and a 2-minute cold-start
+timeout measured too tight (now 5 minutes) - those two specific fixes are
+still owed a real-hardware re-check of their own. The design sketch is kept
+below as-built documentation, not as a plan still to be written.
 
 `install-macos-arm.sh` previously only set up Ollama + Open WebUI via Docker
 Desktop. Image generation (ComfyUI) was explicitly flagged in its own header

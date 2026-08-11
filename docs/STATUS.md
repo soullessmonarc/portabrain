@@ -418,3 +418,39 @@ PII/secrets sweep Phase 12 covered.
   same kind of unsanitised input. Verified against the exact real corruption case
   (a DEL byte in the same position that broke this drive) plus both existing passing
   cases (plain host, a pasted UNC path) to confirm no regression.
+
+## Phase 18 - native ComfyUI on macOS, confirmed working on real Apple Silicon (2026-08-11)
+
+- **CMDRPhaedra tested issue #3 end-to-end on real hardware** (M-series Mac, macOS
+  26.6.1, Docker Desktop 29.4.0): checkpoint downloads and checksum verification, the
+  `launchd` service, and Open WebUI wiring all worked. Critically, **Metal/MPS
+  acceleration is confirmed genuine, not a silent CPU fallback** - `/system_stats`
+  reports `"device":"mps"`, the ComfyUI log shows the diffusion model loaded directly
+  to GPU, and SDXL sampling ran at a steady ~2.0 it/s. Ollama-in-Docker was separately
+  confirmed CPU-only as this project's own comments predicted (~19 tok/s on a 7B q4
+  model, no Metal passthrough into Docker Desktop's VM) - both halves of the design
+  tradeoff this feature was built around, now verified rather than assumed.
+- A real image was generated through Open WebUI's actual `/api/v1/images/generations`
+  endpoint - a correct, coherent 512x512 PNG, not noise or an error placeholder.
+- **Two real bugs found, both fixed:**
+  - `mac-eject.sh`'s own header comment assumed Docker Desktop never needed stopping
+    for eject to work, since nothing here uses its data-root. Wrong in practice:
+    Docker Desktop's own Virtualization.framework VM process holds a handle on the
+    external volume independent of any specific container - reproduced reliably, and
+    stopping or even fully removing this rig's containers did not release it. Only
+    quitting Docker Desktop did. Fixed: `mac-eject.sh` now runs `docker desktop stop`
+    (the same graceful CLI the Windows side already uses) after stopping containers
+    and before ejecting, and the failure diagnostics now specifically recognise a
+    Virtualization.framework dissent reason and tell the user to quit Docker Desktop
+    entirely rather than defaulting to a generic `lsof` dump.
+  - The 2-minute ComfyUI readiness timeout was measured too tight for a genuine cold
+    start - importing torch alone took 30-60s on real hardware, on top of
+    ComfyUI-Manager's own startup registry fetch and reading a multi-GB checkpoint off
+    an external drive. Not a hard failure (a re-run picks up cleanly and wires things
+    up once ComfyUI is actually up), but avoidable. Extended to 5 minutes, and the
+    warning message now says plainly that a timeout here isn't necessarily a real
+    failure.
+- Both fixes address CMDRPhaedra's exact findings but have not themselves been
+  re-verified on real hardware yet - the underlying implementation *is* now confirmed
+  working end-to-end, but these two specific changes are still owed a real-hardware
+  check.

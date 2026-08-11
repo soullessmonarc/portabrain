@@ -2,11 +2,16 @@
 # Portable AI rig - clean eject (macOS side).
 #
 # Stops the stack gracefully so the external drive can be safely unplugged.
-# Unlike eject.sh (Linux/WSL2), there's no systemd, no dockerd data-root
-# living on the drive, and no raw disk to release from a VM - Docker Desktop
-# runs its own Linux VM elsewhere and only bind-mounts paths on the drive into
-# containers. So this only needs to: stop those containers, eject the volume
-# in software, and if that fails, say what's still using it.
+# Unlike eject.sh (Linux/WSL2), there's no systemd and no dockerd data-root
+# living on the drive. There IS still a real VM in the way, though: Docker
+# Desktop's own Virtualization.framework process holds a handle on the
+# external volume independent of any specific container - confirmed on real
+# hardware (issue #3): stopping or even fully removing this rig's containers
+# does not release it, and `diskutil eject` fails with "Unmount was
+# dissented by PID <pid> ... com.apple.Virtualization.VirtualMachine" until
+# Docker Desktop itself is stopped. So this needs to: stop those containers,
+# stop Docker Desktop, eject the volume in software, and if that still
+# fails, say what's still using it.
 #
 # Run with: bash mac-eject.sh [/Volumes/YourDrive]
 # The path is optional - every external volume is searched for the
@@ -131,18 +136,45 @@ if [ -f "$COMFYUI_PLIST" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Stop Docker Desktop itself
+# ---------------------------------------------------------------------------
+# Not optional, confirmed on real hardware (issue #3): Docker Desktop's own
+# Virtualization.framework VM process holds a handle on the external volume
+# regardless of container state - stopping (even removing) this rig's
+# containers above does not release it. `docker desktop stop` is Docker's
+# own graceful CLI for this (same one the Windows side already uses instead
+# of force-killing the process), so this only pauses Docker Desktop rather
+# than quitting the app outright, and `docker desktop start` brings it back.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  echo "== Stopping Docker Desktop (holds a handle on the volume independent of any container) =="
+  if ! docker desktop stop 2>/dev/null; then
+    echo "warning: 'docker desktop stop' didn't succeed - if the eject below fails with" >&2
+    echo "\"Unmount was dissented by\" a Virtualization.framework PID, quit Docker Desktop" >&2
+    echo "by hand and re-run." >&2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Eject
 # ---------------------------------------------------------------------------
 echo "== Ejecting $MOUNT_POINT =="
-if diskutil eject "$MOUNT_POINT"; then
+EJECT_ERROR="$(diskutil eject "$MOUNT_POINT" 2>&1)" && {
+  echo "$EJECT_ERROR"
   echo ""
   echo "Done. Safe to unplug."
   exit 0
-fi
+}
 
 echo "" >&2
 echo "ERROR: diskutil couldn't eject $MOUNT_POINT." >&2
-echo "== What's still using it (diagnostics) ==" >&2
-lsof +D "$MOUNT_POINT" 2>/dev/null | awk 'NR==1 || $0!=""' >&2 || true
-echo "Close those files/apps (or quit them) and re-run." >&2
+if printf '%s' "$EJECT_ERROR" | grep -qi "Virtualization"; then
+  echo "This is Docker Desktop's own VM process still holding the volume - quitting" >&2
+  echo "Docker Desktop entirely (not just 'docker desktop stop') has resolved this on" >&2
+  echo "real hardware when the graceful stop above wasn't enough. Quit it from the menu" >&2
+  echo "bar or 'osascript -e '\''quit app \"Docker\"'\''', then re-run." >&2
+else
+  echo "== What's still using it (diagnostics) ==" >&2
+  lsof +D "$MOUNT_POINT" 2>/dev/null | awk 'NR==1 || $0!=""' >&2 || true
+  echo "Close those files/apps (or quit them) and re-run." >&2
+fi
 exit 1

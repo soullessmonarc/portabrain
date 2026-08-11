@@ -374,3 +374,12 @@ PII/secrets sweep Phase 12 covered.
   rejected without reaching curl, and a mid-retry URL change wipes stale partial data
   rather than corrupting the result via a mismatched resume - each scenario checked
   against actual behavior, not just read for plausibility.
+- **Follow-up, same day:** the Animagine download hit the identical HTTP/2 stream-reset
+  error on a second, separate install run - the resumable-download fix worked correctly
+  (progress carried forward instead of restarting each time), but the underlying cause
+  kept recurring. Every observed failure across both runs was specifically an HTTP/2
+  stream reset, not a plain connection failure, so `fetch_weight()` now forces
+  `--http1.1`: a single persistent connection per download has nothing for either side
+  to reset the way an HTTP/2 stream can be. Verified live, not assumed, that both hosts
+  still serve correct `206 Partial Content` range responses under forced HTTP/1.1, so
+  the resume behavior above is unaffected.

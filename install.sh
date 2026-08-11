@@ -1289,7 +1289,15 @@ fetch_weight() {
 
     echo "  Downloading..."
     local curl_status=0
-    curl -fL -C - --retry 3 --retry-delay 2 -o "$dest.part" "$url" || curl_status=$?
+    # --http1.1: every observed failure against these hosts, across more
+    # than one real install run, has been an HTTP/2 stream reset ("stream
+    # not closed cleanly: CANCEL") partway through a large transfer, not a
+    # plain connection failure. HTTP/1.1 uses one plain persistent
+    # connection per download instead of a multiplexed stream, so there is
+    # nothing for the server (or anything between here and it) to reset in
+    # that specific way. Verified live that both hosts still serve correct
+    # range responses under forced HTTP/1.1, so resuming above is unaffected.
+    curl -fL --http1.1 -C - --retry 3 --retry-delay 2 -o "$dest.part" "$url" || curl_status=$?
     if [ "$curl_status" -eq 0 ]; then
       if [ -s "$dest.part" ]; then
         if [ -n "$expected_sha256" ] && [ "$user_supplied_url" -eq 0 ]; then

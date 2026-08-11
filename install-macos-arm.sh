@@ -546,7 +546,13 @@ PYEOF
 
         echo "  Downloading..."
         local curl_status=0
-        curl -fL -C - --retry 3 --retry-delay 2 -o "$dest.part" "$url" || curl_status=$?
+        # --http1.1: every observed failure against these hosts has been an
+        # HTTP/2 stream reset partway through a large transfer, not a plain
+        # connection failure. HTTP/1.1 uses one plain persistent connection
+        # per download instead of a multiplexed stream, so there is nothing
+        # to reset that way. Verified live that both hosts still serve
+        # correct range responses under forced HTTP/1.1.
+        curl -fL --http1.1 -C - --retry 3 --retry-delay 2 -o "$dest.part" "$url" || curl_status=$?
         if [ "$curl_status" -eq 0 ]; then
           if [ -s "$dest.part" ]; then
             if [ -n "$expected_sha256" ] && [ "$user_supplied_url" -eq 0 ]; then

@@ -444,6 +444,15 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   # the input has to be cleaned up here instead.
   normalise_smb_part() {
     local v="$1"
+    # Strip control characters (0x00-0x1F, 0x7F) first. Confirmed live: a
+    # stray Backspace keystroke leaked through as a literal DEL byte instead
+    # of being consumed by line-editing - observed through a PowerShell ->
+    # wsl.exe -> bash terminal bridge, at this exact prompt - and corrupted a
+    # real /etc/fstab entry into a device string that both bash and fstab's
+    # own parser silently accept as valid syntax, only failing at mount time
+    # with no indication why. The heartbeat timer then retried a broken
+    # entry every 30 seconds indefinitely, never able to succeed.
+    v="$(printf '%s' "$v" | tr -d '\000-\037\177')"
     v="${v//\\//}"                      # backslashes -> forward slashes
     v="${v#"${v%%[!/]*}"}"              # strip every leading slash
     printf '%s' "${v%%/*}"              # keep the first segment only

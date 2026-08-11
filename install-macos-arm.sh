@@ -191,6 +191,16 @@ SHARE_MOUNT=""
 if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   read -r -p "Server address (e.g. 192.168.1.10 or myserver.local): " SMB_HOST
   read -r -p "Share name (e.g. Media, Backups): " SMB_SHARE
+  # Strips control characters (0x00-0x1F, 0x7F). Confirmed live on the
+  # Linux/Windows side: a stray Backspace keystroke leaked through as a
+  # literal DEL byte instead of being consumed by line-editing, through a
+  # PowerShell -> wsl.exe -> bash terminal bridge at this same kind of
+  # prompt - corrupting the mount command built from it in a way that's
+  # silently accepted as valid syntax and only fails at mount time. Applied
+  # here too since the mount_smbfs command below is built from these
+  # variables the same way.
+  SMB_HOST="$(printf '%s' "$SMB_HOST" | tr -d '\000-\037\177')"
+  SMB_SHARE="$(printf '%s' "$SMB_SHARE" | tr -d '\000-\037\177')"
   read -r -p "Username: " SMB_USER
   read -r -s -p "Password: " SMB_PASS
   echo ""

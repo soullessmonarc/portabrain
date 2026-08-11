@@ -383,3 +383,38 @@ PII/secrets sweep Phase 12 covered.
   to reset the way an HTTP/2 stream can be. Verified live, not assumed, that both hosts
   still serve correct `206 Partial Content` range responses under forced HTTP/1.1, so
   the resume behavior above is unaffected.
+
+## Phase 17 - a literal DEL byte broke the SMB share heartbeat for 20+ minutes (2026-08-11)
+
+- **Real-hardware failure, caught live.** The network-share heartbeat timer (runs every
+  30 seconds, `mount -a`-based reconnect) had been failing continuously - 40+
+  consecutive attempts, well past its own 10-attempt alert threshold - and the share was
+  not mounted. Root cause: `/etc/fstab`'s device string for the share was
+  `//<0x7F DEL byte>/media` (rendered by a terminal as `///media`, which looks like a
+  plain triple-slash typo rather than what it actually is). Both bash's own parsing and
+  fstab's parser accept this as syntactically valid, so nothing failed until the actual
+  mount attempt - and `mount -a` doesn't surface *why* a line failed, so the heartbeat
+  just logged "not reachable" every 30 seconds indefinitely with no diagnostic value.
+- The DEL byte's origin: a stray Backspace keystroke, typed at the "Server address" or
+  "Share name" prompt during a real interactive install run, appears to have leaked
+  through as a literal DEL byte instead of being consumed by normal terminal
+  line-editing - observed through this project's PowerShell -> `wsl.exe` -> `bash`
+  hand-off specifically, the same class of terminal-bridging quirk that produced a
+  stray `#` in a download-URL prompt earlier the same night (Phase 16). Neither
+  incident's exact trigger was pinned down with certainty, but both point at the same
+  bridge, and both are now defended against at the point where untrusted input enters a
+  script, rather than by trying to fix the bridge itself.
+- **Immediate fix (this specific drive):** confirmed the stored SMB credentials were
+  correct all along - a direct test mount with them succeeded immediately - so the
+  only actual problem was the corrupted fstab line. Rewrote `/etc/fstab` byte-aware
+  (Python, not a text-based `grep -v`, since the corrupted line's real content
+  disagreed with what it visually rendered as) with the correct device string, backed
+  up the original first, and verified `mount -a` succeeds cleanly with it.
+- **Root-cause fix (so this can't recur):** `normalise_smb_part()` (`install.sh`, and
+  the identical copy in the Megatron-side install script) now strips all ASCII control
+  characters (0x00-0x1F, 0x7F) before doing anything else with SMB host/share input.
+  `install-macos-arm.sh` had no normalisation function for this at all - added
+  equivalent stripping there too, since its `mount_smbfs` command is built from the
+  same kind of unsanitised input. Verified against the exact real corruption case
+  (a DEL byte in the same position that broke this drive) plus both existing passing
+  cases (plain host, a pasted UNC path) to confirm no regression.

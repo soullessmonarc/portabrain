@@ -18,7 +18,7 @@ it from. PortaBrain packages that setup as a repeatable, interactive installer i
 of a one-off manual process, so the actual data and model weights live on the drive and
 the machine is just a host.
 
-## Current status (v0.7.3)
+## Current status (v0.8.0)
 
 - **Windows (via WSL2) and native Linux:** full parity - Ollama, ComfyUI, Open WebUI,
   GPU-aware model tiering, optional SMB share with local-first sync and a reconnect

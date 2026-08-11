@@ -17,8 +17,8 @@ guessed at - check the linked source yourself before relying on the terms.
 | Project | Role here | License | Checked? |
 |---|---|---|---|
 | [Ollama](https://github.com/ollama/ollama) | Serves the chat/coder LLMs | MIT | Verified against upstream `LICENSE` |
-| [ComfyUI](https://github.com/comfyanonymous/ComfyUI) | Image/video generation engine | GPL-3.0 | Verified against upstream `LICENSE` |
-| [`yanwk/comfyui-boot`](https://github.com/YanWenKun/ComfyUI-Docker) | Docker image this project pins for ComfyUI - bundles ComfyUI itself plus ComfyUI-Manager and its own launch tooling | Not independently verified for the wrapper/tooling itself - see the image's own repo | Not checked |
+| [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Image/video generation engine. On Linux/Windows, run via the pinned Docker image below; on macOS, cloned directly at a pinned release tag and run natively (no Metal GPU passthrough into Docker containers on Mac) | GPL-3.0 | Verified against upstream `LICENSE`, at its current repo location - the project moved from `comfyanonymous/ComfyUI` to `Comfy-Org/ComfyUI`, checked directly via the GitHub API rather than assumed from an old link |
+| [`yanwk/comfyui-boot`](https://github.com/YanWenKun/ComfyUI-Docker) | Docker image this project pins for ComfyUI on Linux/Windows - bundles ComfyUI itself plus ComfyUI-Manager and its own launch tooling | Not independently verified for the wrapper/tooling itself - see the image's own repo | Not checked |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Chat frontend | **Modified BSD-3-Clause** - not plain BSD. It prohibits removing or altering "Open WebUI" branding *except* for deployments under 50 users in any 30-day period, or under a separate commercial agreement. If you deploy this to more than 50 people, that clause applies to you, not just this project's maintainer | Verified against upstream `LICENSE` |
 
 ## Model weights

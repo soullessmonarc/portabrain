@@ -171,7 +171,8 @@ if printf '%s' "$EJECT_ERROR" | grep -qi "Virtualization"; then
   echo "This is Docker Desktop's own VM process still holding the volume - quitting" >&2
   echo "Docker Desktop entirely (not just 'docker desktop stop') has resolved this on" >&2
   echo "real hardware when the graceful stop above wasn't enough. Quit it from the menu" >&2
-  echo "bar or 'osascript -e '\''quit app \"Docker\"'\''', then re-run." >&2
+  echo "bar, or run: osascript -e 'quit app \"Docker\"'" >&2
+  echo "Then re-run." >&2
 else
   echo "== What's still using it (diagnostics) ==" >&2
   lsof +D "$MOUNT_POINT" 2>/dev/null | awk 'NR==1 || $0!=""' >&2 || true

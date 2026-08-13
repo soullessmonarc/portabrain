@@ -48,6 +48,30 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# ComfyUI's requirements.txt needs Python >=3.10 (e.g. av>=16.0.0 has no
+# wheels for older versions). macOS's own bundled /usr/bin/python3 is
+# Apple's, stuck on 3.9 for years now, so it doesn't qualify. Checked here,
+# upfront alongside the Docker checks above, rather than discovering it after
+# formatting a drive and pulling several GB of chat models: hitting this
+# failure at the bottom of the ComfyUI section (behind `set -e`) used to abort
+# the whole run with the rig left half set up and no image generation, no
+# clear signal why.
+COMFYUI_PYTHON=""
+for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null; then
+      COMFYUI_PYTHON="$(command -v "$cand")"
+      break
+    fi
+  fi
+done
+if [ -z "$COMFYUI_PYTHON" ]; then
+  echo "NOTE: no Python 3.10+ found - ComfyUI (image generation) needs it and will be" >&2
+  echo "      skipped this run. macOS's bundled python3 is 3.9, which is too old." >&2
+  echo "      Install a newer one, e.g.: brew install python@3.12" >&2
+  echo "      Then re-run this script to add image generation." >&2
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Pick where this rig lives
 # ---------------------------------------------------------------------------
@@ -430,14 +454,12 @@ docker exec ollama ollama pull "$CODER_MODEL"
 # SECURITY.md#network-exposure) without needing a wider bind to be reachable
 # from Docker Desktop's side.
 echo ""
-read -r -p "Set up image generation (ComfyUI, runs natively for real GPU access)? [Y/n]: " WANT_COMFYUI
 COMFYUI_READY=0
-if [[ ! "$WANT_COMFYUI" =~ ^[Nn]$ ]]; then
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "WARNING: python3 not found - ComfyUI needs it and can't be set up. Install" >&2
-    echo "         Python 3 (e.g. via Xcode Command Line Tools: xcode-select --install," >&2
-    echo "         or python.org) and re-run this script to add it later." >&2
-  else
+if [ -z "$COMFYUI_PYTHON" ]; then
+  echo "Skipping image generation setup - no Python 3.10+ available (see note near the top of this run)." >&2
+else
+  read -r -p "Set up image generation (ComfyUI, runs natively for real GPU access)? [Y/n]: " WANT_COMFYUI
+  if [[ ! "$WANT_COMFYUI" =~ ^[Nn]$ ]]; then
     COMFYUI_DIR="$MOUNT_POINT/comfyui/ComfyUI"
     COMFYUI_TAG="v0.31.0"
     COMFYUI_REPO="https://github.com/Comfy-Org/ComfyUI.git"
@@ -453,7 +475,7 @@ if [[ ! "$WANT_COMFYUI" =~ ^[Nn]$ ]]; then
 
     echo "== Setting up ComfyUI's Python environment (this can take a few minutes) =="
     if [ ! -d "$COMFYUI_DIR/venv" ]; then
-      python3 -m venv "$COMFYUI_DIR/venv"
+      "$COMFYUI_PYTHON" -m venv "$COMFYUI_DIR/venv"
     fi
     # shellcheck disable=SC1091
     source "$COMFYUI_DIR/venv/bin/activate"

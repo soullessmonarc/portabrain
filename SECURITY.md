@@ -95,6 +95,12 @@ handles a username and password. What actually happens to them:
 - **No plaintext in logs:** `mount_smbfs`/`mount.cifs` error output is written to a
   freshly `mktemp`'d, `chmod 600` file rather than a predictable shared path, since some
   mount error messages can echo back the connection string.
+- **Known gap (macOS only):** `mount_smbfs` takes the credentials as a URL
+  (`//user:password@host/share`), unlike `mount.cifs`'s credentials file on the
+  Linux/WSL2 side. A password containing `@`, `:`, `/`, or `;` will misparse that URL
+  and fail to mount - silently, and on every reconnect attempt the heartbeat makes,
+  not just at setup. Not yet fixed; see
+  [`code-review/CODE_REVIEW_2026-08-31.md`](code-review/CODE_REVIEW_2026-08-31.md#1-smb-password-containing---or--will-silently-break-mount_smbfs--not-fixed).
 - **Removed on eject:** `eject.sh` deletes `/etc/portableai-credentials` (via `shred`
   where available, since a plain `rm` on ext4 leaves the plaintext recoverable in freed
   blocks) and strips the matching `/etc/fstab` line. This matters because the

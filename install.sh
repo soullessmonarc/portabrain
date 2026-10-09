@@ -166,12 +166,36 @@ fi
 IS_WSL=0
 if grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; fi
 
+# On native Linux the boot disk shows up here like any other, and only the
+# YES prompt stood between a mistyped number and a wiped OS. So any disk with
+# something mounted from it (/, /boot, swap, a data partition) is held back
+# too. The one exception is a filesystem carrying this rig's own label: an
+# already-set-up drive that happens to be mounted is still a valid choice,
+# and the format step is never reached for it anyway. -P (key="value" pairs)
+# rather than columns, because both LABEL and MOUNTPOINT can be empty.
+disk_in_use() {
+  lsblk -n -P -o LABEL,MOUNTPOINT "/dev/$1" 2>/dev/null | awk -v rig="$LABEL" '
+    {
+      lab = ""; mp = "";
+      if (match($0, /LABEL="[^"]*"/)) lab = substr($0, RSTART + 7, RLENGTH - 8);
+      if (match($0, /MOUNTPOINT="[^"]*"/)) mp = substr($0, RSTART + 12, RLENGTH - 13);
+      if (mp != "" && lab != rig) found = 1;
+    }
+    END { exit found ? 0 : 1 }'
+}
+
 SELECTABLE=()
 HIDDEN_COUNT=0
+IN_USE_COUNT=0
 for i in "${!DISK_LINES[@]}"; do
+  D_NAME="$(printf '%s' "${DISK_LINES[$i]}" | cut -f1)"
   D_MODEL="$(printf '%s' "${DISK_LINES[$i]}" | cut -f3)"
   if [ "$IS_WSL" -eq 1 ] && [ "$D_MODEL" = "Virtual Disk" ]; then
     HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+    continue
+  fi
+  if disk_in_use "$D_NAME"; then
+    IN_USE_COUNT=$((IN_USE_COUNT + 1))
     continue
   fi
   SELECTABLE+=("${DISK_LINES[$i]}")
@@ -186,11 +210,19 @@ done
 if [ "$HIDDEN_COUNT" -gt 0 ]; then
   echo "  ($HIDDEN_COUNT WSL internal disk(s) hidden - they can never be used for this)"
 fi
+if [ "$IN_USE_COUNT" -gt 0 ]; then
+  echo "  ($IN_USE_COUNT disk(s) hidden because something is mounted from them - e.g. this system's own disk)"
+fi
 
 if [ "${#SELECTABLE[@]}" -eq 0 ]; then
   echo "" >&2
-  echo "ERROR: no usable drives found - only WSL's own internal disks are present." >&2
-  echo "Attach the external drive to WSL2 first (install-windows.ps1 does this for you)." >&2
+  if [ "$IS_WSL" -eq 1 ]; then
+    echo "ERROR: no usable drives found - only WSL's own internal disks are present." >&2
+    echo "Attach the external drive to WSL2 first (install-windows.ps1 does this for you)." >&2
+  else
+    echo "ERROR: no usable drives found - every disk has something mounted from it." >&2
+    echo "Plug in the external drive, and unmount it first if your desktop auto-mounted it." >&2
+  fi
   exit 1
 fi
 
@@ -234,7 +266,14 @@ MOUNT_POINT="${MOUNT_POINT:-$DEFAULT_MOUNT_POINT}"
 # and reusing the same name for both would make `blkid -L` ambiguous the moment
 # the drive is unlocked. Plain drives stay supported so rigs built before
 # encryption existed keep working untouched.
-PARTITION="${DEVICE}1"
+# Partition naming depends on the device name: sda -> sda1, but nvme0n1 ->
+# nvme0n1p1 and mmcblk0 -> mmcblk0p1. The kernel inserts the "p" whenever the
+# disk name ends in a digit. Getting this wrong made an already-set-up NVMe
+# rig look blank, and the script then offered to erase it.
+case "$DEVICE" in
+  *[0-9]) PARTITION="${DEVICE}p1" ;;
+  *) PARTITION="${DEVICE}1" ;;
+esac
 MAPPER_NAME="portableai"
 FS_DEVICE=""
 IS_ENCRYPTED=0

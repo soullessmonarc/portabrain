@@ -271,7 +271,9 @@ if ! mount | grep -q " $SHARE_MOUNT "; then
   exit 0
 fi
 mkdir -p "\$SHARE_OUTPUT"
-find "\$LOCAL_OUTPUT" -maxdepth 1 -type f -mtime +0s 2>/dev/null | while IFS= read -r file; do
+# Only files untouched for over a minute, so a render or upload still being
+# written isn't moved half-finished. (Was -mtime +0s, which matched everything.)
+find "\$LOCAL_OUTPUT" -maxdepth 1 -type f -mmin +1 2>/dev/null | while IFS= read -r file; do
   if mv -n "\$file" "\$SHARE_OUTPUT/" 2>/dev/null; then
     echo "moved \$(basename "\$file") -> \$SHARE_OUTPUT/"
   fi

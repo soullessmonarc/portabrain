@@ -20,6 +20,14 @@ Lifecycle, so the task never outlives its purpose:
 Kept as one script called by all three, rather than the same 30 lines copied
 into each, so the task definition can only ever drift in one place.
 
+The task runs elevated with no UAC prompt, so it never points at the repo
+checkout: that is normally a folder the everyday, unelevated user can write to,
+and anything running as that user could edit connect.ps1 there and get
+Administrator at the next logon. Registering copies connect.ps1, connect.sh and
+this script into a per-distro folder under Program Files (writable only by
+Administrators) and points the task at that copy. Re-running connect.ps1 or the
+installer from the checkout refreshes the copy; unregistering deletes it.
+
 Usage (normally called by the other scripts, not directly):
   .\autoconnect-task.ps1 -Action register -Distro Ubuntu-24.04
   .\autoconnect-task.ps1 -Action unregister -Distro Ubuntu-24.04
@@ -30,6 +38,12 @@ param(
     [string]$Action,
 
     [string]$Distro = "Ubuntu",
+
+    # Where connect.ps1 keeps its keep-alive PID file. Defaults to this script's
+    # folder (the checkout), which is where disconnect.ps1 looks for it; passed
+    # through explicitly when the protected copy re-registers itself, so the
+    # task's connect.ps1 still writes the PID where disconnect.ps1 will find it.
+    [string]$StateDir = "",
 
     # Suppress the informational output, for callers that already print their
     # own progress. Failures are still reported.
@@ -44,6 +58,14 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
 # silently replaced the first one's task instead of adding its own - exactly the
 # bug the share-watcher task had.
 $TaskName = "PortableAI Auto-Connect ($Distro)"
+
+# Program Files rather than ProgramData: any user can create folders in
+# ProgramData, so an unelevated process could pre-create this one and keep write
+# access to it as its owner. Program Files only lets Administrators create
+# anything, and what it inherits (Users read/execute, Administrators and SYSTEM
+# full control) is exactly the ACL wanted here, so nothing needs re-locking.
+$safeDistro = $Distro -replace '[^A-Za-z0-9._-]', '_'
+$InstallDir = Join-Path $env:ProgramFiles "PortaBrain\autoconnect\$safeDistro"
 
 # Read into a script-scoped flag here rather than referencing $Quiet from inside
 # the function. It works either way at runtime - PowerShell's scoping means a
@@ -63,14 +85,36 @@ if ($Action -eq "unregister") {
     } else {
         Write-Info "No scheduled task '$TaskName' registered - nothing to remove."
     }
+    if (Test-Path $InstallDir) {
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force
+        Write-Info "Removed the task's protected script copy at '$InstallDir'."
+    }
     exit 0
 }
 
-$connectScript = Join-Path $ScriptDir "connect.ps1"
-if (-not (Test-Path $connectScript)) {
-    Write-Error "connect.ps1 not found next to this script at '$connectScript' - can't register a task that points at nothing."
-    exit 1
+if (-not $StateDir) { $StateDir = $ScriptDir }
+
+# Every file the elevated task runs: connect.ps1, the connect.sh it runs as root
+# inside WSL2, and this script, which connect.ps1 calls to re-register.
+$taskFiles = @("connect.ps1", "connect.sh", "autoconnect-task.ps1")
+foreach ($f in $taskFiles) {
+    if (-not (Test-Path (Join-Path $ScriptDir $f))) {
+        Write-Error "$f not found next to this script in '$ScriptDir' - can't register a task that points at nothing."
+        exit 1
+    }
 }
+
+# When connect.ps1 runs from the protected copy it calls this script from there
+# too, and then the copy is already the source - nothing to refresh.
+$sourceFull = [System.IO.Path]::GetFullPath($ScriptDir).TrimEnd('\')
+$installFull = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+if ($sourceFull -ne $installFull) {
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    foreach ($f in $taskFiles) {
+        Copy-Item -LiteralPath (Join-Path $ScriptDir $f) -Destination (Join-Path $InstallDir $f) -Force
+    }
+}
+$connectScript = Join-Path $InstallDir "connect.ps1"
 
 $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $conhostExe = Join-Path $env:SystemRoot "System32\conhost.exe"
@@ -79,7 +123,7 @@ $conhostExe = Join-Path $env:SystemRoot "System32\conhost.exe"
 # default to a Restricted policy that blocks running any .ps1 at all, so without
 # it this task fails silently on a stock machine. -IfPresent makes a boot without
 # the drive attached a quiet no-op rather than a failed task.
-$psArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$connectScript`" -Distro `"$Distro`" -IfPresent"
+$psArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$connectScript`" -Distro `"$Distro`" -StateDir `"$StateDir`" -IfPresent"
 
 # Launched via 'conhost.exe --headless' so no console window is ever created.
 # powershell.exe's own -WindowStyle Hidden is applied only after the process has
@@ -123,7 +167,7 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
 
-Write-Info "Registered scheduled task '$TaskName'."
+Write-Info "Registered scheduled task '$TaskName' (runs the protected copy in '$InstallDir')."
 Write-Info "  The rig will attach and start itself ~45s after you log on, if the drive is plugged in."
 Write-Info "  'disconnect.ps1' removes it again. To remove it by hand:"
 Write-Info "    Unregister-ScheduledTask -TaskName `"$TaskName`" -Confirm:`$false"

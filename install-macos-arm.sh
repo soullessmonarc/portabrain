@@ -228,16 +228,43 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   SMB_HOST="$(printf '%s' "$SMB_HOST" | tr -d '\000-\037\177')"
   SMB_SHARE="$(printf '%s' "$SMB_SHARE" | tr -d '\000-\037\177')"
   read -r -p "Username: " SMB_USER
-  read -r -s -p "Password: " SMB_PASS
-  echo ""
   read -r -p "Local mount point [/Volumes/PortableAIShare]: " SHARE_MOUNT
   SHARE_MOUNT="${SHARE_MOUNT:-/Volumes/PortableAIShare}"
 
-  # Store the password in the macOS Keychain rather than any script file on
-  # disk, so the heartbeat agent below can retrieve it later to reconnect
-  # without ever having it embedded in plaintext anywhere.
-  KEYCHAIN_SERVICE="portableai-smb-${SMB_HOST}"
-  security add-generic-password -a "$SMB_USER" -s "$KEYCHAIN_SERVICE" -w "$SMB_PASS" -U 2>/dev/null || true
+  # The password never passes through this script. It is typed straight into
+  # `security`'s own prompt (a trailing -w with no value makes it prompt) and
+  # stored as an SMB internet password in the login Keychain - the same kind
+  # of entry Finder's "Remember this password" creates. mount_smbfs -N then
+  # looks it up there itself, so the password is never on any command line
+  # (where any local user can read it with `ps`, and where the heartbeat used
+  # to put it every 30 seconds) and never in the smb:// URL (where `@ : / ;`
+  # in a password misparsed and broke the mount - code-review/CODE_REVIEW_2026-08-31.md#1).
+  # -T lets mount_smbfs read the entry without a Keychain "allow" dialog.
+  # Earlier installs stored the password as a generic password under
+  # portableai-smb-<host>, read back by the heartbeat; nothing uses that any
+  # more, so remove it.
+  security delete-generic-password -a "$SMB_USER" -s "portableai-smb-${SMB_HOST}" >/dev/null 2>&1 || true
+  SMB_KEYCHAIN_OK=false
+  for attempt in 1 2 3; do
+    echo "Enter the share password for ${SMB_USER}@${SMB_HOST} (saved to your login Keychain):"
+    if security add-internet-password -a "$SMB_USER" -s "$SMB_HOST" -r "smb " \
+        -l "$SMB_HOST" -T /sbin/mount_smbfs -U -w; then
+      SMB_KEYCHAIN_OK=true
+      break
+    fi
+    echo "Saving the password to the Keychain failed (attempt $attempt/3)." >&2
+  done
+  if [ "$SMB_KEYCHAIN_OK" != true ]; then
+    # Without the Keychain entry neither the mount below nor the heartbeat's
+    # reconnects can ever authenticate, so say so instead of carrying on as if
+    # the share were set up.
+    echo "ERROR: could not save the share password to your login Keychain, so the network share can't be mounted. Skipping network share setup; re-run this script to try again." >&2
+    WANT_SMB=n
+    SHARE_MOUNT=""
+  fi
+fi
+
+if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
 
   mkdir -p "$SHARE_MOUNT" 2>/dev/null || true
   echo "== Mounting network share =="
@@ -247,14 +274,16 @@ if [[ "$WANT_SMB" =~ ^[Yy]$ ]]; then
   # local user on a multi-user Mac.
   SMB_LOG="$(mktemp /tmp/smb-mount.XXXXXX.log)"
   chmod 600 "$SMB_LOG"
-  if /sbin/mount_smbfs "//${SMB_USER}:${SMB_PASS}@${SMB_HOST}/${SMB_SHARE}" "$SHARE_MOUNT" 2>"$SMB_LOG"; then
+  # -N: never prompt; take the password from the Keychain entry saved above.
+  # This is the exact call the heartbeat makes, so a failure here means the
+  # heartbeat won't be able to reconnect either.
+  if /sbin/mount_smbfs -N "//${SMB_USER}@${SMB_HOST}/${SMB_SHARE}" "$SHARE_MOUNT" 2>"$SMB_LOG"; then
     echo "Network share mounted at $SHARE_MOUNT"
     mkdir -p "$SHARE_MOUNT/comfyui-output"
     rm -f "$SMB_LOG"
   else
     echo "WARNING: network share did not mount (see $SMB_LOG). Check the server address, share name, and credentials - the heartbeat below will keep retrying." >&2
   fi
-  unset SMB_PASS
 
   # ComfyUI isn't wired up on macOS yet (see the note at the top of this
   # script), but Open WebUI's own uploads and any future generated output
@@ -304,7 +333,6 @@ SHARE_MOUNT="$SHARE_MOUNT"
 SMB_USER="$SMB_USER"
 SMB_HOST="$SMB_HOST"
 SMB_SHARE="$SMB_SHARE"
-KEYCHAIN_SERVICE="$KEYCHAIN_SERVICE"
 STATE_DIR="\$HOME/Library/Application Support/PortableAI"
 FAIL_COUNT_FILE="\$STATE_DIR/share-fail-count"
 ALERTED_FILE="\$STATE_DIR/share-alerted"
@@ -317,11 +345,9 @@ if mount | grep -q " \$SHARE_MOUNT "; then
 fi
 
 mkdir -p "\$SHARE_MOUNT" 2>/dev/null || true
-SMB_PASS="\$(security find-generic-password -a "\$SMB_USER" -s "\$KEYCHAIN_SERVICE" -w 2>/dev/null || echo '')"
-if [ -n "\$SMB_PASS" ]; then
-  /sbin/mount_smbfs "//\${SMB_USER}:\${SMB_PASS}@\${SMB_HOST}/\${SMB_SHARE}" "\$SHARE_MOUNT" >/dev/null 2>&1 || true
-fi
-unset SMB_PASS
+# -N: the password comes from the login Keychain entry the installer saved,
+# never from this script or its command line.
+/sbin/mount_smbfs -N "//\${SMB_USER}@\${SMB_HOST}/\${SMB_SHARE}" "\$SHARE_MOUNT" >/dev/null 2>&1 || true
 
 if mount | grep -q " \$SHARE_MOUNT "; then
   echo "Network share reconnected."
@@ -366,11 +392,18 @@ fi
 # 3. Compose stack (Ollama + Open WebUI only - see the ComfyUI note above)
 # ---------------------------------------------------------------------------
 echo ""
+# Pinned to the same immutable tags as install.sh, for the same reason (see
+# the "Pinned container images" comment there): floating :latest / :main tags
+# meant two installs a month apart got different software. To update, change a
+# tag here (and in install.sh), re-run, and test before relying on it.
+OLLAMA_IMAGE="ollama/ollama:0.32.5"
+OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:v0.11.0"
+
 echo "== Writing stack files to $STACK_DIR =="
 cat > "$STACK_DIR/docker-compose.yml" <<EOF
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: $OLLAMA_IMAGE
     container_name: ollama
     restart: unless-stopped
     environment:
@@ -389,10 +422,16 @@ services:
     networks: [ai]
 
   openwebui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: $OPENWEBUI_IMAGE
     container_name: openwebui
     restart: unless-stopped
-    ports: ["8080:8080"]
+    # Bound to loopback only, deliberately, same as install.sh. A bare
+    # "8080:8080" publishes to 0.0.0.0 - every device on whatever network this
+    # Mac is on - and on a fresh install the first account to sign up becomes
+    # admin. To reach it from another device on your own LAN on purpose,
+    # change this to "8080:8080" (or "<your-LAN-IP>:8080:8080") yourself - see
+    # SECURITY.md.
+    ports: ["127.0.0.1:8080:8080"]
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEBUI_AUTH=true

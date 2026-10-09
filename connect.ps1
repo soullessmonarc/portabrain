@@ -26,12 +26,17 @@ param(
     # fires on every boot whether or not the drive happens to be plugged in,
     # and a failure notification every time you start the machine without it
     # would train you to ignore the one that actually matters.
-    [switch]$IfPresent
+    [switch]$IfPresent,
+    # Folder for the keep-alive PID file. The auto-connect task runs a protected
+    # copy of this script from Program Files and passes the checkout here, so
+    # disconnect.ps1 (run from the checkout) still finds the PID.
+    [string]$StateDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
-$KeepAlivePidFile = Join-Path $ScriptDir ".keepalive.pid"
+if (-not $StateDir) { $StateDir = $ScriptDir }
+$KeepAlivePidFile = Join-Path $StateDir ".keepalive.pid"
 
 Write-Host ""
 Write-Host "===== Portable AI Rig - Connect ====="
@@ -125,9 +130,13 @@ Write-Host "== Mounting and starting the stack inside WSL2 ($Distro) =="
 # practice, while `-u root` is authenticated by this already-elevated Windows
 # session instead of a Linux password. `--cd ~` avoids WSL trying (and failing)
 # to translate this script's working directory, which matters when it's run
-# from a UNC network path that WSL can't map at all.
+# from a UNC network path that WSL can't map at all. Written next to this script
+# rather than to %TEMP%: the helper runs as root, and %TEMP% is writable by every
+# unelevated process of this user, which could swap its contents between the
+# write and the run. Next to this script it is exactly as protected as
+# connect.sh - in the auto-connect task's case, admin-only.
 $scriptWsl = "/mnt/" + $ScriptDir.Substring(0, 1).ToLower() + "/" + $ScriptDir.Substring(3).Replace('\', '/')
-$helperWin = Join-Path $env:TEMP "portableai-connect-helper.sh"
+$helperWin = Join-Path $ScriptDir ".connect-helper.sh"
 $helperLines = @(
     "set -e"
     "bash '$scriptWsl/connect.sh'"
@@ -166,7 +175,7 @@ Write-Host "Keep-alive running (PID $($keepAlive.Id))."
 # and you'd only find out after the next reboot.
 $autoConnectScript = Join-Path $ScriptDir "autoconnect-task.ps1"
 if (Test-Path $autoConnectScript) {
-    & $autoConnectScript -Action register -Distro $Distro -Quiet
+    & $autoConnectScript -Action register -Distro $Distro -StateDir $StateDir -Quiet
     Write-Host "Auto-connect at logon is registered (removed again by disconnect.ps1)."
 }
 

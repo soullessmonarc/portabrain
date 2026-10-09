@@ -83,24 +83,27 @@ existed keep working untouched - both shapes are detected rather than assumed.
 The installer optionally sets up a network (SMB/CIFS) share, which means it
 handles a username and password. What actually happens to them:
 
-- **Entry:** typed interactively (`read -s` / PowerShell `Read-Host -AsSecureString`),
-  never passed as a script argument or hardcoded anywhere.
+- **Entry:** typed interactively, never passed as a script argument or hardcoded
+  anywhere. On Linux/WSL2 and Windows that is `read -s` / PowerShell
+  `Read-Host -AsSecureString`; on macOS the password is typed straight into the
+  `security` tool's own prompt, so it never passes through the installer at all.
 - **Storage (Linux/WSL2):** a dedicated credentials file at
   `/etc/portableai-credentials/smb-share`, `chmod 600`, owned by root, referenced from
   `/etc/fstab` via `credentials=` rather than embedding the password in the mount
   options themselves.
-- **Storage (macOS):** the macOS Keychain (`security add-generic-password`), so the
-  heartbeat's reconnect logic can retrieve it later without the password ever touching
-  disk in plaintext.
+- **Storage (macOS):** the login Keychain, as an SMB internet password
+  (`security add-internet-password -r "smb "`, the same kind of entry Finder's
+  "Remember this password" creates). Both the initial mount and the heartbeat's
+  reconnects call `mount_smbfs -N //user@host/share`, which reads the password from
+  the Keychain itself, so it is never on a command line (where any local user could
+  read it with `ps`) and never inside the `smb://` URL. That also fixes the old bug
+  where a password containing `@`, `:`, `/`, or `;` misparsed the URL
+  ([`code-review/CODE_REVIEW_2026-08-31.md`](code-review/CODE_REVIEW_2026-08-31.md#1-smb-password-containing---or--will-silently-break-mount_smbfs--not-fixed)).
+  If the Keychain write fails, the installer says so and skips the share rather than
+  leaving a heartbeat that can never reconnect.
 - **No plaintext in logs:** `mount_smbfs`/`mount.cifs` error output is written to a
   freshly `mktemp`'d, `chmod 600` file rather than a predictable shared path, since some
   mount error messages can echo back the connection string.
-- **Known gap (macOS only):** `mount_smbfs` takes the credentials as a URL
-  (`//user:password@host/share`), unlike `mount.cifs`'s credentials file on the
-  Linux/WSL2 side. A password containing `@`, `:`, `/`, or `;` will misparse that URL
-  and fail to mount - silently, and on every reconnect attempt the heartbeat makes,
-  not just at setup. Not yet fixed; see
-  [`code-review/CODE_REVIEW_2026-08-31.md`](code-review/CODE_REVIEW_2026-08-31.md#1-smb-password-containing---or--will-silently-break-mount_smbfs--not-fixed).
 - **Removed on eject:** `eject.sh` deletes `/etc/portableai-credentials` (via `shred`
   where available, since a plain `rm` on ext4 leaves the plaintext recoverable in freed
   blocks) and strips the matching `/etc/fstab` line. This matters because the
